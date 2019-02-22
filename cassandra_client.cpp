@@ -4,6 +4,7 @@
 #include <bitset>
 #include <cstddef>
 #include <memory>
+#include <type_traits>
 
 #include <appbase/application.hpp>
 
@@ -15,9 +16,11 @@ const std::string CassandraClient::transaction_trace_table = "transaction_trace"
 
 
 CassandraClient::CassandraClient(const std::string& hostUrl)
-    : gCluster_(nullptr, nullptr), gSession_(nullptr, nullptr),
+    : gCluster_(nullptr, cass_cluster_free),
+    gSession_(nullptr, cass_session_free),
     gPreparedInsertBlock_(nullptr, cass_prepared_free),
     gPreparedInsertTransaction_(nullptr, cass_prepared_free),
+    gPreparedInsertTransactionTrace_(nullptr, cass_prepared_free),
     totalBatchSize_(0),
     gBatch_(cass_batch_new(CASS_BATCH_TYPE_LOGGED), cass_batch_free)
 {
@@ -27,11 +30,11 @@ CassandraClient::CassandraClient(const std::string& hostUrl)
     CassError err;
 
     cluster = cass_cluster_new();
-    gCluster_ = cluster_guard(cluster, cass_cluster_free);
+    gCluster_.reset(cluster);
     cass_cluster_set_contact_points(cluster, hostUrl.c_str());
 
     session = cass_session_new();
-    gSession_ = session_guard(session, cass_session_free);
+    gSession_.reset(session);
     connectFuture = cass_session_connect(session, cluster);
     auto g_future = future_guard(connectFuture, cass_future_free);
     err = cass_future_error_code(connectFuture);
@@ -63,42 +66,69 @@ CassandraClient::~CassandraClient()
 }
 
 
-statement_guard CassandraClient::createInsertBlockStatement(
+void CassandraClient::pushInsertBlockStatement(
     const std::string& id,
-    std::vector<cass_byte_t> block_num_buffer,
-    cass_uint32_t block_date,
-    const std::string& block)
+    std::vector<cass_byte_t> blockNumBuffer,
+    cass_uint32_t blockDate,
+    std::string&& block)
 {
+    size_t stmtSize = id.size() * sizeof(std::remove_reference<decltype(id)>::type::value_type) +
+        blockNumBuffer.size() * sizeof(std::remove_reference<decltype(blockNumBuffer)>::type::value_type) +
+        sizeof(blockDate) +
+        block.size() * sizeof(std::remove_reference<decltype(block)>::type::value_type);
     auto statement = cass_prepared_bind(gPreparedInsertBlock_.get());
     auto gStatement = statement_guard(statement, cass_statement_free);
 
     cass_statement_bind_string_by_name(statement, "id", id.c_str());
-    cass_statement_bind_bytes_by_name(statement, "block_num", block_num_buffer.data(), block_num_buffer.size());
-    cass_statement_bind_uint32_by_name(statement, "block_date", block_date);
+    cass_statement_bind_bytes_by_name(statement, "block_num", blockNumBuffer.data(), blockNumBuffer.size());
+    cass_statement_bind_uint32_by_name(statement, "block_date", blockDate);
     cass_statement_bind_string_by_name(statement, "doc", block.c_str());
-    return gStatement;
+    appendStatement(std::move(gStatement), stmtSize);
 }
 
-statement_guard CassandraClient::createInsertTransactionStatement(
-        const std::string& id,
-        const std::string& transaction)
+void CassandraClient::pushInsertTransactionStatement(
+    const std::string& id,
+    std::string&& transaction)
 {
+    size_t stmtSize = id.size() * sizeof(std::remove_reference<decltype(id)>::type::value_type) +
+        transaction.size() * sizeof(std::remove_reference<decltype(transaction)>::type::value_type);
     auto statement = cass_prepared_bind(gPreparedInsertTransaction_.get());
     auto gStatement = statement_guard(statement, cass_statement_free);
 
     cass_statement_bind_string_by_name(statement, "id", id.c_str());
     cass_statement_bind_string_by_name(statement, "doc", transaction.c_str());
-    return gStatement;
+    appendStatement(std::move(gStatement), stmtSize);
 }
 
-void CassandraClient::appendStatement(statement_guard&& gStatement)
+void CassandraClient::pushInsertTransactionTraceStatement(
+    const std::string& id,
+    std::vector<cass_byte_t> blockNumBuffer,
+    cass_uint32_t blockDate,
+    std::string&& transactionTrace)
+{
+    size_t stmtSize = id.size() * sizeof(std::remove_reference<decltype(id)>::type::value_type) +
+        blockNumBuffer.size() * sizeof(std::remove_reference<decltype(blockNumBuffer)>::type::value_type) +
+        sizeof(blockDate) +
+        transactionTrace.size() * sizeof(std::remove_reference<decltype(transactionTrace)>::type::value_type);
+    auto statement = cass_prepared_bind(gPreparedInsertTransactionTrace_.get());
+    auto gStatement = statement_guard(statement, cass_statement_free);
+
+    cass_statement_bind_string_by_name(statement, "id", id.c_str());
+    cass_statement_bind_bytes_by_name(statement, "block_num", blockNumBuffer.data(), blockNumBuffer.size());
+    cass_statement_bind_uint32_by_name(statement, "block_date", blockDate);
+    cass_statement_bind_string_by_name(statement, "doc", transactionTrace.c_str());
+    appendStatement(std::move(gStatement), stmtSize);
+}
+
+
+void CassandraClient::appendStatement(statement_guard&& gStatement, size_t size)
 {
     bool needFlush = false;
     batch_guard tmp = batch_guard(cass_batch_new(CASS_BATCH_TYPE_LOGGED), cass_batch_free);
     {
         std::lock_guard<std::mutex> guard(batchMutex_);
         cass_batch_add_statement(gBatch_.get(), gStatement.get());
-        totalBatchSize_++;
+        totalBatchSize_ += size;
         if (totalBatchSize_ > MAX_BATCH_SIZE)
         {
             needFlush = true;
@@ -111,7 +141,7 @@ void CassandraClient::appendStatement(statement_guard&& gStatement)
     }
 }
 
-void CassandraClient::appendStatement(const std::vector<statement_guard>& gStatements)
+void CassandraClient::appendStatement(const std::vector<statement_guard>& gStatements, size_t size)
 {
     bool needFlush = false;
     batch_guard tmp = batch_guard(cass_batch_new(CASS_BATCH_TYPE_LOGGED), cass_batch_free);
@@ -121,7 +151,7 @@ void CassandraClient::appendStatement(const std::vector<statement_guard>& gState
         {
             cass_batch_add_statement(gBatch_.get(), gStatements[i].get());
         }
-        totalBatchSize_ += gStatements.size();
+        totalBatchSize_ += size;
         if (totalBatchSize_ > MAX_BATCH_SIZE)
         {
             needFlush = true;
@@ -176,6 +206,7 @@ void CassandraClient::prepareStatements()
 
     std::string insertBlockQuery = "INSERT INTO " + block_table + " (id, block_num, block_date, doc) VALUES(?, ?, ?, ?)";
     std::string insertTransactionQuery = "INSERT INTO " + transaction_table + " (id, doc) VALUES(?, ?)";
+    std::string insertTransactionTraceQuery = "INSERT INTO " + transaction_trace_table + " (id, block_num, block_date, doc) VALUES(?, ?, ?, ?)";
 
     //insert int block
     prepareFuture = cass_session_prepare(gSession_.get(), insertBlockQuery.c_str());
@@ -191,6 +222,13 @@ void CassandraClient::prepareStatements()
     printf("Prepare result: %s\n", cass_error_desc(rc));
     ok &= (rc == CASS_OK);
     gPreparedInsertTransaction_.reset(cass_future_get_prepared(prepareFuture));
+    //insert into transaction_trace
+    prepareFuture = cass_session_prepare(gSession_.get(), insertTransactionTraceQuery.c_str());
+    gFuture.reset(prepareFuture);
+    rc = cass_future_error_code(prepareFuture);
+    printf("Prepare result: %s\n", cass_error_desc(rc));
+    ok &= (rc == CASS_OK);
+    gPreparedInsertTransactionTrace_.reset(cass_future_get_prepared(prepareFuture));
 
     if (!ok)
     {
