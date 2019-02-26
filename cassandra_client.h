@@ -28,6 +28,8 @@ public:
         const eosio::chain::deleteauth& del);
     void updateAccountAuth(
         const eosio::chain::updateauth& update);
+    void updateAccountAbi(
+        const eosio::chain::setabi& setabi);
     
     void insertAccountActionTrace(
         const std::string& account,
@@ -83,6 +85,7 @@ private:
     prepared_guard gPreparedDeleteAccountPublicKeys_;
     prepared_guard gPreparedDeleteAccountControls_;
     prepared_guard gPreparedInsertAccount_;
+    prepared_guard gPreparedInsertAccountAbi_;
     prepared_guard gPreparedInsertAccountPublicKeys_;
     prepared_guard gPreparedInsertAccountControls_;
     prepared_guard gPreparedInsertAccountActionTrace_;

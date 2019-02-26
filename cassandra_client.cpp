@@ -8,6 +8,8 @@
 #include <type_traits>
 
 #include <appbase/application.hpp>
+#include <fc/io/json.hpp>
+#include <fc/variant.hpp>
 
 
 const std::string CassandraClient::history_keyspace                 = "eos_history_test";
@@ -28,6 +30,7 @@ CassandraClient::CassandraClient(const std::string& hostUrl)
     gPreparedDeleteAccountPublicKeys_(nullptr, cass_prepared_free),
     gPreparedDeleteAccountControls_(nullptr, cass_prepared_free),
     gPreparedInsertAccount_(nullptr, cass_prepared_free),
+    gPreparedInsertAccountAbi_(nullptr, cass_prepared_free),
     gPreparedInsertAccountPublicKeys_(nullptr, cass_prepared_free),
     gPreparedInsertAccountControls_(nullptr, cass_prepared_free),
     gPreparedInsertAccountActionTrace_(nullptr, cass_prepared_free),
@@ -82,6 +85,8 @@ void CassandraClient::prepareStatements()
         " WHERE name=? and permission=?";
     std::string insertAccountQuery = "INSERT INTO " + account_table +
         " (name, creator, account_create_time) VALUES(?, ?, ?)";
+    std::string insertAccountAbiQuery = "INSERT INTO " + account_table +
+        " (name, abi) VALUES (?, ?);";
     std::string insertAccountPublicKeysQuery = "INSERT INTO " + account_public_keys_table +
         " (name, permission, key) VALUES(?, ?, ?)";
     std::string insertAccountControlsQuery = "INSERT INTO " + account_controls_table +
@@ -113,6 +118,7 @@ void CassandraClient::prepareStatements()
     ok &= prepare(deleteAccountPublicKeysQuery,       &gPreparedDeleteAccountPublicKeys_);
     ok &= prepare(deleteAccountControlsQuery,         &gPreparedDeleteAccountControls_);
     ok &= prepare(insertAccountQuery,                 &gPreparedInsertAccount_);
+    ok &= prepare(insertAccountAbiQuery,              &gPreparedInsertAccountAbi_);
     ok &= prepare(insertAccountPublicKeysQuery,       &gPreparedInsertAccountPublicKeys_);
     ok &= prepare(insertAccountControlsQuery,         &gPreparedInsertAccountControls_);
     ok &= prepare(insertAccountActionTraceQuery,      &gPreparedInsertAccountActionTrace_);
@@ -230,6 +236,18 @@ void CassandraClient::updateAccountAuth(
         cass_statement_bind_string_by_name(statement, "permission", update.permission.to_string().c_str());
         appendStatement(std::move(gStatement), stmtSize);
     }
+}
+
+void CassandraClient::updateAccountAbi(
+    const eosio::chain::setabi& setabi)
+{
+    size_t stmtSize = 0; //TODO: calculate this
+
+    auto statement = cass_prepared_bind(gPreparedInsertAccountAbi_.get());
+    auto gStatement = statement_guard(statement, cass_statement_free);
+    cass_statement_bind_string_by_name(statement, "name", setabi.account.to_string().c_str());
+    cass_statement_bind_string_by_name(statement, "abi", fc::json::to_string(fc::variant(setabi.abi)).c_str());
+    appendStatement(std::move(gStatement), stmtSize);
 }
 
 void CassandraClient::insertAccountActionTrace(
