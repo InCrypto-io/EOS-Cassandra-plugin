@@ -61,8 +61,8 @@ public:
 
     static const std::string history_keyspace;
     static const std::string account_table;
-    static const std::string account_public_keys_table;
-    static const std::string account_controls_table;
+    static const std::string account_public_key_table;
+    static const std::string account_controlling_account_table;
     static const std::string account_action_trace_table;
     static const std::string account_action_trace_shard_table;
     static const std::string action_trace_table;

@@ -12,16 +12,16 @@
 #include <fc/variant.hpp>
 
 
-const std::string CassandraClient::history_keyspace                 = "eos_history_test";
-const std::string CassandraClient::account_table                    = "account";
-const std::string CassandraClient::account_public_keys_table        = "account_public_keys";
-const std::string CassandraClient::account_controls_table           = "account_controls";
-const std::string CassandraClient::account_action_trace_table       = "account_action_trace";
-const std::string CassandraClient::account_action_trace_shard_table = "account_action_trace_shard";
-const std::string CassandraClient::action_trace_table               = "action_trace";
-const std::string CassandraClient::block_table                      = "block";
-const std::string CassandraClient::transaction_table                = "transaction";
-const std::string CassandraClient::transaction_trace_table          = "transaction_trace";
+const std::string CassandraClient::history_keyspace                  = "eos_history_test";
+const std::string CassandraClient::account_table                     = "account";
+const std::string CassandraClient::account_public_key_table          = "account_public_key";
+const std::string CassandraClient::account_controlling_account_table = "account_controlling_account";
+const std::string CassandraClient::account_action_trace_table        = "account_action_trace";
+const std::string CassandraClient::account_action_trace_shard_table  = "account_action_trace_shard";
+const std::string CassandraClient::action_trace_table                = "action_trace";
+const std::string CassandraClient::block_table                       = "block";
+const std::string CassandraClient::transaction_table                 = "transaction";
+const std::string CassandraClient::transaction_trace_table           = "transaction_trace";
 
 
 CassandraClient::CassandraClient(const std::string& hostUrl)
@@ -79,17 +79,17 @@ CassandraClient::~CassandraClient()
 
 void CassandraClient::prepareStatements()
 {
-    std::string deleteAccountPublicKeysQuery = "DELETE FROM " + account_public_keys_table +
+    std::string deleteAccountPublicKeysQuery = "DELETE FROM " + account_public_key_table +
         " WHERE name=? and permission=?";
-    std::string deleteAccountControlsQuery = "DELETE FROM " + account_controls_table +
+    std::string deleteAccountControlsQuery = "DELETE FROM " + account_controlling_account_table +
         " WHERE name=? and permission=?";
     std::string insertAccountQuery = "INSERT INTO " + account_table +
         " (name, creator, account_create_time) VALUES(?, ?, ?)";
     std::string insertAccountAbiQuery = "INSERT INTO " + account_table +
         " (name, abi) VALUES (?, ?);";
-    std::string insertAccountPublicKeysQuery = "INSERT INTO " + account_public_keys_table +
+    std::string insertAccountPublicKeysQuery = "INSERT INTO " + account_public_key_table +
         " (name, permission, key) VALUES(?, ?, ?)";
-    std::string insertAccountControlsQuery = "INSERT INTO " + account_controls_table +
+    std::string insertAccountControlsQuery = "INSERT INTO " + account_controlling_account_table +
         " (name, controlling_name, permission) VALUES(?, ?, ?)";
     std::string insertAccountActionTraceQuery = "INSERT INTO " + account_action_trace_table +
         " (account_name, shard_id, global_seq, block_time) VALUES(?, ?, ?, ?)";
