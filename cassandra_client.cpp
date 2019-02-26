@@ -138,23 +138,29 @@ void CassandraClient::insertAccount(
     const eosio::chain::newaccount& newacc,
     const eosio::chain::block_timestamp_type& blockTime)
 {
-    size_t stmtSize = 0; //TODO: calculate this
+    CassStatement* statement = nullptr;
+    CassBatch*         batch = nullptr;
+    CassFuture*       future = nullptr;
+    statement_guard gStatement(nullptr, cass_statement_free);
+    batch_guard gBatch(nullptr, cass_batch_free);
 
-    auto statement = cass_prepared_bind(gPreparedInsertAccount_.get());
-    auto gStatement = statement_guard(statement, cass_statement_free);
+    statement = cass_prepared_bind(gPreparedInsertAccount_.get());
+    gStatement.reset(statement);
     int64_t msFromEpoch = (int64_t)blockTime.to_time_point().time_since_epoch().count() / 1000;
     cass_statement_bind_string_by_name(statement, "name", newacc.name.to_string().c_str());
     cass_statement_bind_string_by_name(statement, "creator", newacc.creator.to_string().c_str());
     cass_statement_bind_int64_by_name(statement, "account_create_time", msFromEpoch);
-    appendStatement(std::move(gStatement), stmtSize);
+    auto gInsertAccountFuture = executeStatement(std::move(gStatement));
 
+    batch = cass_batch_new(CASS_BATCH_TYPE_UNLOGGED);
+    gBatch.reset(batch);
     for( const auto& account : newacc.owner.accounts ) {
         statement = cass_prepared_bind(gPreparedInsertAccountControls_.get());
         gStatement.reset(statement);
         cass_statement_bind_string_by_name(statement, "name", newacc.name.to_string().c_str());
         cass_statement_bind_string_by_name(statement, "controlling_name", account.permission.actor.to_string().c_str());
         cass_statement_bind_string_by_name(statement, "permission", "owner");
-        appendStatement(std::move(gStatement), stmtSize);
+        cass_batch_add_statement(batch, statement);
     }
     for( const auto& account : newacc.active.accounts ) {
         statement = cass_prepared_bind(gPreparedInsertAccountControls_.get());
@@ -162,126 +168,150 @@ void CassandraClient::insertAccount(
         cass_statement_bind_string_by_name(statement, "name", newacc.name.to_string().c_str());
         cass_statement_bind_string_by_name(statement, "controlling_name", account.permission.actor.to_string().c_str());
         cass_statement_bind_string_by_name(statement, "permission", "active");
-        appendStatement(std::move(gStatement), stmtSize);
+        cass_batch_add_statement(batch, statement);
     }
+    future = cass_session_execute_batch(gSession_.get(), batch);
+    future_guard gInsertAccountControlsFuture(future, cass_future_free);
 
+    batch = cass_batch_new(CASS_BATCH_TYPE_UNLOGGED);
+    gBatch.reset(batch);
     for( const auto& pub_key_weight : newacc.owner.keys ) {
         statement = cass_prepared_bind(gPreparedInsertAccountPublicKeys_.get());
         gStatement.reset(statement);
         cass_statement_bind_string_by_name(statement, "name", newacc.name.to_string().c_str());
         cass_statement_bind_string_by_name(statement, "permission", "owner");
         cass_statement_bind_string_by_name(statement, "key", pub_key_weight.key.operator std::string().c_str());
-        appendStatement(std::move(gStatement), stmtSize);
+        cass_batch_add_statement(batch, statement);
     }
-
     for( const auto& pub_key_weight : newacc.active.keys ) {
         statement = cass_prepared_bind(gPreparedInsertAccountPublicKeys_.get());
         gStatement.reset(statement);
         cass_statement_bind_string_by_name(statement, "name", newacc.name.to_string().c_str());
         cass_statement_bind_string_by_name(statement, "permission", "active");
         cass_statement_bind_string_by_name(statement, "key", pub_key_weight.key.operator std::string().c_str());
-        appendStatement(std::move(gStatement), stmtSize);
+        cass_batch_add_statement(batch, statement);
     }
+    future = cass_session_execute_batch(gSession_.get(), batch);
+    future_guard gInsertAccountPublicKeysFuture(future, cass_future_free);
+
+    waitFuture(std::move(gInsertAccountFuture));
+    waitFuture(std::move(gInsertAccountControlsFuture));
+    waitFuture(std::move(gInsertAccountPublicKeysFuture));
 }
 
 void CassandraClient::deleteAccountAuth(
     const eosio::chain::deleteauth& del)
 {
-    size_t stmtSize = 0; //TODO: calculate this
+    CassStatement* statement = nullptr;
+    statement_guard gStatement(nullptr, cass_statement_free);
 
-    auto statement = cass_prepared_bind(gPreparedDeleteAccountPublicKeys_.get());
-    auto gStatement = statement_guard(statement, cass_statement_free);
+    statement = cass_prepared_bind(gPreparedDeleteAccountPublicKeys_.get());
+    gStatement.reset(statement);
     cass_statement_bind_string_by_name(statement, "name", del.account.to_string().c_str());
     cass_statement_bind_string_by_name(statement, "permission", del.permission.to_string().c_str());
-    appendStatement(std::move(gStatement), stmtSize);
+    auto gDeleteAccountPublicKeysFuture = executeStatement(std::move(gStatement));
 
     statement = cass_prepared_bind(gPreparedDeleteAccountControls_.get());
     gStatement.reset(statement);
     cass_statement_bind_string_by_name(statement, "name", del.account.to_string().c_str());
     cass_statement_bind_string_by_name(statement, "permission", del.permission.to_string().c_str());
-    appendStatement(std::move(gStatement), stmtSize);
+    auto gDeleteAccountControlsFuture = executeStatement(std::move(gStatement));
+
+    waitFuture(std::move(gDeleteAccountPublicKeysFuture));
+    waitFuture(std::move(gDeleteAccountControlsFuture));
 }
 
 void CassandraClient::updateAccountAuth(
     const eosio::chain::updateauth& update)
 {
-    size_t stmtSize = 0; //TODO: calculate this
+    CassStatement* statement = nullptr;
+    CassBatch*         batch = nullptr;
+    CassFuture*       future = nullptr;
+    statement_guard gStatement(nullptr, cass_statement_free);
+    batch_guard gBatch(nullptr, cass_batch_free);
 
-    auto statement = cass_prepared_bind(gPreparedDeleteAccountPublicKeys_.get());
-    auto gStatement = statement_guard(statement, cass_statement_free);
+    statement = cass_prepared_bind(gPreparedDeleteAccountPublicKeys_.get());
+    gStatement.reset(statement);
     cass_statement_bind_string_by_name(statement, "name", update.account.to_string().c_str());
     cass_statement_bind_string_by_name(statement, "permission", update.permission.to_string().c_str());
-    appendStatement(std::move(gStatement), stmtSize);
+    auto gDeleteAccountPublicKeysFuture = executeStatement(std::move(gStatement));
 
     statement = cass_prepared_bind(gPreparedDeleteAccountControls_.get());
     gStatement.reset(statement);
     cass_statement_bind_string_by_name(statement, "name", update.account.to_string().c_str());
     cass_statement_bind_string_by_name(statement, "permission", update.permission.to_string().c_str());
-    appendStatement(std::move(gStatement), stmtSize);
+    auto gDeleteAccountControlsFuture = executeStatement(std::move(gStatement));
 
+    batch = cass_batch_new(CASS_BATCH_TYPE_UNLOGGED);
+    gBatch.reset(batch);
     for( const auto& pub_key_weight : update.auth.keys ) {
         statement = cass_prepared_bind(gPreparedInsertAccountPublicKeys_.get());
         gStatement.reset(statement);
         cass_statement_bind_string_by_name(statement, "name", update.account.to_string().c_str());
         cass_statement_bind_string_by_name(statement, "permission", update.permission.to_string().c_str());
         cass_statement_bind_string_by_name(statement, "key", pub_key_weight.key.operator std::string().c_str());
-        appendStatement(std::move(gStatement), stmtSize);
+        cass_batch_add_statement(batch, statement);
     }
+    future = cass_session_execute_batch(gSession_.get(), batch);
+    future_guard gInsertAccountPublicKeysFuture(future, cass_future_free);
 
+    batch = cass_batch_new(CASS_BATCH_TYPE_UNLOGGED);
+    gBatch.reset(batch);
     for( const auto& account : update.auth.accounts ) {
         statement = cass_prepared_bind(gPreparedInsertAccountControls_.get());
         gStatement.reset(statement);
         cass_statement_bind_string_by_name(statement, "name", update.account.to_string().c_str());
         cass_statement_bind_string_by_name(statement, "controlling_name", account.permission.actor.to_string().c_str());
         cass_statement_bind_string_by_name(statement, "permission", update.permission.to_string().c_str());
-        appendStatement(std::move(gStatement), stmtSize);
+        cass_batch_add_statement(batch, statement);
     }
+    future = cass_session_execute_batch(gSession_.get(), batch);
+    future_guard gInsertAccountControlsFuture(future, cass_future_free);
+
+    waitFuture(std::move(gDeleteAccountPublicKeysFuture));
+    waitFuture(std::move(gDeleteAccountControlsFuture));
+    waitFuture(std::move(gInsertAccountPublicKeysFuture));
+    waitFuture(std::move(gInsertAccountControlsFuture));
 }
 
 void CassandraClient::updateAccountAbi(
     const eosio::chain::setabi& setabi)
 {
-    size_t stmtSize = 0; //TODO: calculate this
-
     auto statement = cass_prepared_bind(gPreparedInsertAccountAbi_.get());
     auto gStatement = statement_guard(statement, cass_statement_free);
     cass_statement_bind_string_by_name(statement, "name", setabi.account.to_string().c_str());
     cass_statement_bind_string_by_name(statement, "abi", fc::json::to_string(fc::variant(setabi.abi)).c_str());
-    appendStatement(std::move(gStatement), stmtSize);
+    auto gFuture = executeStatement(std::move(gStatement));
+    waitFuture(std::move(gFuture));
 }
 
 void CassandraClient::insertAccountActionTrace(
     const std::string& account,
-    uint32_t shardId,
+    int64_t shardId,
     std::vector<cass_byte_t> globalSeq,
     fc::time_point blockTime)
 {
-    size_t stmtSize = account.size() * sizeof(std::remove_reference<decltype(account)>::type::value_type) +
-        sizeof(int64_t) * 2 +
-        globalSeq.size() * sizeof(std::remove_reference<decltype(globalSeq)>::type::value_type);
-
     int64_t msFromEpoch = (int64_t)blockTime.time_since_epoch().count() / 1000;
     auto statement = cass_prepared_bind(gPreparedInsertAccountActionTrace_.get());
     auto gStatement = statement_guard(statement, cass_statement_free);
     cass_statement_bind_string_by_name(statement, "account_name", account.c_str());
-    cass_statement_bind_int64_by_name(statement, "shard_id", (int64_t)shardId * 1000);
+    cass_statement_bind_int64_by_name(statement, "shard_id", shardId);
     cass_statement_bind_bytes_by_name(statement, "global_seq", globalSeq.data(), globalSeq.size());
     cass_statement_bind_int64_by_name(statement, "block_time", msFromEpoch);
-    appendStatement(std::move(gStatement), stmtSize);
+    auto gFuture = executeStatement(std::move(gStatement));
+    waitFuture(std::move(gFuture));
 }
 
 void CassandraClient::insertAccountActionTraceShard(
     const std::string& account,
-    uint32_t shardId)
+    int64_t shardId)
 {
-    size_t stmtSize = account.size() * sizeof(std::remove_reference<decltype(account)>::type::value_type) +
-        sizeof(shardId);
-
     auto statement = cass_prepared_bind(gPreparedInsertAccountActionTraceShard_.get());
     auto gStatement = statement_guard(statement, cass_statement_free);
     cass_statement_bind_string_by_name(statement, "account_name", account.c_str());
-    cass_statement_bind_int64_by_name(statement, "shard_id", (int64_t)shardId * 1000);
-    appendStatement(std::move(gStatement), stmtSize);
+    cass_statement_bind_int64_by_name(statement, "shard_id", shardId);
+    auto gFuture = executeStatement(std::move(gStatement));
+    waitFuture(std::move(gFuture));
 }
 
 void CassandraClient::insertActionTrace(
@@ -289,12 +319,6 @@ void CassandraClient::insertActionTrace(
     fc::time_point blockTime,
     std::string&& actionTrace)
 {
-    //TODO: calculate statement size
-    size_t stmtSize = globalSeq.size() * sizeof(std::remove_reference<decltype(globalSeq)>::type::value_type) +
-        sizeof(cass_uint32_t) +
-        sizeof(int64_t) +
-        actionTrace.size() * sizeof(std::remove_reference<decltype(actionTrace)>::type::value_type);
-
     auto statement = cass_prepared_bind(gPreparedInsertActionTrace_.get());
     auto gStatement = statement_guard(statement, cass_statement_free);
     cass_uint32_t blockDate = cass_date_from_epoch(blockTime.sec_since_epoch());
@@ -303,7 +327,8 @@ void CassandraClient::insertActionTrace(
     cass_statement_bind_uint32_by_name(statement, "block_date", blockDate);
     cass_statement_bind_int64_by_name(statement, "block_time", msFromEpoch);
     cass_statement_bind_string_by_name(statement, "doc", actionTrace.c_str());
-    appendStatement(std::move(gStatement), stmtSize);
+    auto gFuture = executeStatement(std::move(gStatement));
+    waitFuture(std::move(gFuture));
 }
 
 void CassandraClient::insertBlock(
@@ -312,33 +337,27 @@ void CassandraClient::insertBlock(
     fc::time_point blockTime,
     std::string&& block)
 {
-    size_t stmtSize = id.size() * sizeof(std::remove_reference<decltype(id)>::type::value_type) +
-        blockNumBuffer.size() * sizeof(std::remove_reference<decltype(blockNumBuffer)>::type::value_type) +
-        sizeof(cass_uint32_t) +
-        block.size() * sizeof(std::remove_reference<decltype(block)>::type::value_type);
     auto statement = cass_prepared_bind(gPreparedInsertBlock_.get());
     auto gStatement = statement_guard(statement, cass_statement_free);
-
     cass_uint32_t blockDate = cass_date_from_epoch(blockTime.sec_since_epoch());
     cass_statement_bind_string_by_name(statement, "id", id.c_str());
     cass_statement_bind_bytes_by_name(statement, "block_num", blockNumBuffer.data(), blockNumBuffer.size());
     cass_statement_bind_uint32_by_name(statement, "block_date", blockDate);
     cass_statement_bind_string_by_name(statement, "doc", block.c_str());
-    appendStatement(std::move(gStatement), stmtSize);
+    auto gFuture = executeStatement(std::move(gStatement));
+    waitFuture(std::move(gFuture));
 }
 
 void CassandraClient::insertTransaction(
     const std::string& id,
     std::string&& transaction)
 {
-    size_t stmtSize = id.size() * sizeof(std::remove_reference<decltype(id)>::type::value_type) +
-        transaction.size() * sizeof(std::remove_reference<decltype(transaction)>::type::value_type);
     auto statement = cass_prepared_bind(gPreparedInsertTransaction_.get());
     auto gStatement = statement_guard(statement, cass_statement_free);
-
     cass_statement_bind_string_by_name(statement, "id", id.c_str());
     cass_statement_bind_string_by_name(statement, "doc", transaction.c_str());
-    appendStatement(std::move(gStatement), stmtSize);
+    auto gFuture = executeStatement(std::move(gStatement));
+    waitFuture(std::move(gFuture));
 }
 
 void CassandraClient::insertTransactionTrace(
@@ -347,20 +366,15 @@ void CassandraClient::insertTransactionTrace(
     fc::time_point blockTime,
     std::string&& transactionTrace)
 {
-    size_t stmtSize = id.size() * sizeof(std::remove_reference<decltype(id)>::type::value_type) +
-        blockNumBuffer.size() * sizeof(std::remove_reference<decltype(blockNumBuffer)>::type::value_type) +
-        sizeof(cass_uint32_t) +
-        transactionTrace.size() * sizeof(std::remove_reference<decltype(transactionTrace)>::type::value_type);
     auto statement = cass_prepared_bind(gPreparedInsertTransactionTrace_.get());
     auto gStatement = statement_guard(statement, cass_statement_free);
-
-
     cass_uint32_t blockDate = cass_date_from_epoch(blockTime.sec_since_epoch());
     cass_statement_bind_string_by_name(statement, "id", id.c_str());
     cass_statement_bind_bytes_by_name(statement, "block_num", blockNumBuffer.data(), blockNumBuffer.size());
     cass_statement_bind_uint32_by_name(statement, "block_date", blockDate);
     cass_statement_bind_string_by_name(statement, "doc", transactionTrace.c_str());
-    appendStatement(std::move(gStatement), stmtSize);
+    auto gFuture = executeStatement(std::move(gStatement));
+    waitFuture(std::move(gFuture));
 }
 
 
@@ -384,44 +398,11 @@ void CassandraClient::appendStatement(statement_guard&& gStatement, size_t size)
     }
 }
 
-void CassandraClient::appendStatement(const std::vector<statement_guard>& gStatements, size_t size)
-{
-    bool needFlush = false;
-    batch_guard tmp = batch_guard(cass_batch_new(CASS_BATCH_TYPE_LOGGED), cass_batch_free);
-    {
-        std::lock_guard<std::mutex> guard(batchMutex_);
-        for (int i = 0; i < gStatements.size(); i++)
-        {
-            cass_batch_add_statement(gBatch_.get(), gStatements[i].get());
-        }
-        totalBatchSize_ += size;
-        if (totalBatchSize_ > MAX_BATCH_SIZE)
-        {
-            needFlush = true;
-            gBatch_.swap(tmp);
-            totalBatchSize_ = 0;
-        }
-    }
-    if (needFlush) {
-        flushBatch(std::move(tmp));
-    }
-}
-
-void CassandraClient::executeStatement(statement_guard&& gStatement)
+future_guard CassandraClient::executeStatement(statement_guard&& gStatement)
 {
     auto statement = gStatement.get();
     auto resultFuture = cass_session_execute(gSession_.get(), statement);
-    auto gFuture = future_guard(resultFuture, cass_future_free);
-    if(cass_future_error_code(resultFuture) == CASS_OK) {
-        std::cout << "Success!" << std::endl;
-    } else {
-        const char* message;
-        size_t message_length;
-        cass_future_error_message(resultFuture, &message, &message_length);
-        fprintf(stderr, "Unable to run query: '%.*s'\n",
-            (int)message_length, message);
-        appbase::app().quit();
-    }
+    return future_guard(resultFuture, cass_future_free);
 }
 
 void CassandraClient::flushBatch(batch_guard&& gBatch)
@@ -434,6 +415,21 @@ void CassandraClient::flushBatch(batch_guard&& gBatch)
         const char* message;
         size_t message_length;
         cass_future_error_message(batchFuture, &message, &message_length);
+        fprintf(stderr, "Unable to run query: '%.*s'\n",
+            (int)message_length, message);
+        appbase::app().quit();
+    }
+}
+
+void CassandraClient::waitFuture(future_guard&& gFuture)
+{
+    auto cassFuture = gFuture.get();
+    if(cass_future_error_code(cassFuture) == CASS_OK) {
+        //std::cout << "Success!" << std::endl;
+    } else {
+        const char* message;
+        size_t message_length;
+        cass_future_error_message(cassFuture, &message, &message_length);
         fprintf(stderr, "Unable to run query: '%.*s'\n",
             (int)message_length, message);
         appbase::app().quit();

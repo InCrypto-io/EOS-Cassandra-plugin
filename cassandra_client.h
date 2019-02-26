@@ -33,12 +33,12 @@ public:
     
     void insertAccountActionTrace(
         const std::string& account,
-        uint32_t shardId,
+        int64_t shardId,
         std::vector<cass_byte_t> globalSeq,
         fc::time_point blockTime);
     void insertAccountActionTraceShard(
         const std::string& account,
-        uint32_t shardId);
+        int64_t shardId);
     void insertActionTrace(
         std::vector<cass_byte_t> globalSeq,
         fc::time_point blockTime,
@@ -56,7 +56,7 @@ public:
         std::vector<cass_byte_t> blockNumBuffer,
         fc::time_point blockTime,
         std::string&& transactionTrace);
-    //TODO: onIrreversible, insertAccount, updateAccountAuth, deleteAccountAuth, updateAccountAbi
+    //TODO: onIrreversible
 
 
     static const std::string history_keyspace;
@@ -75,9 +75,9 @@ private:
     CassandraClient& operator=(const CassandraClient& other) = delete;
 
     void appendStatement(statement_guard&& gStatement, size_t size);
-    void appendStatement(const std::vector<statement_guard>& gStatements, size_t size);
-    void executeStatement(statement_guard&& gStatement);
+    future_guard executeStatement(statement_guard&& gStatement);
     void flushBatch(batch_guard&& gBatch);
+    void waitFuture(future_guard&& gFuture);
 
 
     cluster_guard gCluster_;
