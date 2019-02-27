@@ -10,6 +10,8 @@
 #include <fc/utf8.hpp>
 #include <fc/variant.hpp>
 
+#include <boost/algorithm/string.hpp>
+
 #include <ctime>
 #include <memory>
 #include <set>
@@ -19,6 +21,23 @@
 
 namespace eosio {
    static appbase::abstract_plugin& _cassandra_history_plugin = app().register_plugin<cassandra_history_plugin>();
+
+struct filter_entry {
+   name receiver;
+   name action;
+   name actor;
+
+   friend bool operator<( const filter_entry& a, const filter_entry& b ) {
+      return std::tie( a.receiver, a.action, a.actor ) < std::tie( b.receiver, b.action, b.actor );
+   }
+
+   //            receiver          action       actor
+   bool match( const name& rr, const name& an, const name& ar ) const {
+      return (receiver.value == 0 || receiver == rr) &&
+             (action.value == 0 || action == an) &&
+             (actor.value == 0 || actor == ar);
+   }
+};
 
 class cassandra_history_plugin_impl {
    public:
@@ -69,7 +88,15 @@ class cassandra_history_plugin_impl {
       const chain::action& act,
       const chain::block_timestamp_type& block_time);
 
+   bool filter_include( const account_name& receiver, const action_name& act_name,
+                        const vector<chain::permission_level>& authorization ) const;
+   bool filter_include( const transaction& trx ) const;
+
    void init();
+
+   bool filter_on_star = true;
+   std::set<filter_entry> filter_on;
+   std::set<filter_entry> filter_out;
 
 
    chain_plugin* chain_plug = nullptr;
@@ -80,6 +107,72 @@ class cassandra_history_plugin_impl {
 
    std::unique_ptr<CassandraClient> cas_client;
 };
+
+bool cassandra_history_plugin_impl::filter_include( const account_name& receiver, const action_name& act_name,
+                                           const vector<chain::permission_level>& authorization ) const
+{
+   bool include = false;
+   if( filter_on_star ) {
+      include = true;
+   } else {
+      auto itr = std::find_if( filter_on.cbegin(), filter_on.cend(), [&receiver, &act_name]( const auto& filter ) {
+         return filter.match( receiver, act_name, 0 );
+      } );
+      if( itr != filter_on.cend() ) {
+         include = true;
+      } else {
+         for( const auto& a : authorization ) {
+            auto itr = std::find_if( filter_on.cbegin(), filter_on.cend(), [&receiver, &act_name, &a]( const auto& filter ) {
+               return filter.match( receiver, act_name, a.actor );
+            } );
+            if( itr != filter_on.cend() ) {
+               include = true;
+               break;
+            }
+         }
+      }
+   }
+
+   if( !include ) { return false; }
+   if( filter_out.empty() ) { return true; }
+
+   auto itr = std::find_if( filter_out.cbegin(), filter_out.cend(), [&receiver, &act_name]( const auto& filter ) {
+      return filter.match( receiver, act_name, 0 );
+   } );
+   if( itr != filter_out.cend() ) { return false; }
+
+   for( const auto& a : authorization ) {
+      auto itr = std::find_if( filter_out.cbegin(), filter_out.cend(), [&receiver, &act_name, &a]( const auto& filter ) {
+         return filter.match( receiver, act_name, a.actor );
+      } );
+      if( itr != filter_out.cend() ) { return false; }
+   }
+
+   return true;
+}
+
+bool cassandra_history_plugin_impl::filter_include( const transaction& trx ) const
+{
+   if( !filter_on_star || !filter_out.empty() ) {
+      bool include = false;
+      for( const auto& a : trx.actions ) {
+         if( filter_include( a.account, a.name, a.authorization ) ) {
+            include = true;
+            break;
+         }
+      }
+      if( !include ) {
+         for( const auto& a : trx.context_free_actions ) {
+            if( filter_include( a.account, a.name, a.authorization ) ) {
+               include = true;
+               break;
+            }
+         }
+      }
+      return include;
+   }
+   return true;
+}
 
 
 cassandra_history_plugin_impl::cassandra_history_plugin_impl()
@@ -214,7 +307,7 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
    for (auto& atrace : base_action_traces)
    {
       chain::base_action_trace &base = atrace.get();
-      fc::variant atrace_doc = chain.to_variant_with_abi(base, my->abi_serializer_max_time_ms);
+      fc::variant atrace_doc = chain.to_variant_with_abi(base, abi_serializer_max_time_ms);
 
       std::vector<uint8_t> global_seq_buffer;
       global_seq_buffer.reserve(sizeof(base.receipt.global_sequence));
@@ -330,6 +423,10 @@ void cassandra_history_plugin::set_program_options(options_description&, options
    cfg.add_options()
          ("cassandra-url", bpo::value<std::string>(),
           "cassandra URL connection string If not specified then plugin is disabled.")
+         ("cassandra-filter-on", bpo::value<vector<string>>()->composing(),
+          "Track actions which match receiver:action:actor. Receiver, Action, & Actor may be blank to include all. i.e. eosio:: or :transfer:  Use * or leave unspecified to include all.")
+         ("cassandra-filter-out", bpo::value<vector<string>>()->composing(),
+          "Do not track actions which match receiver:action:actor. Receiver, Action, & Actor may be blank to exclude all.")
          ;
 }
 
@@ -344,6 +441,34 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
                        chain::plugin_config_exception, "--abi-serializer-max-time-ms required as default value not appropriate for parsing full blocks");
             fc::microseconds abi_serializer_max_time = app().get_plugin<chain_plugin>().get_abi_serializer_max_time();
             my->abi_serializer_max_time_ms = abi_serializer_max_time;
+         }
+
+         if( options.count( "cassandra-filter-on" )) {
+            auto fo = options.at( "cassandra-filter-on" ).as<vector<string>>();
+            my->filter_on_star = false;
+            for( auto& s : fo ) {
+               if( s == "*" ) {
+                  my->filter_on_star = true;
+                  break;
+               }
+               std::vector<std::string> v;
+               boost::split( v, s, boost::is_any_of( ":" ));
+               EOS_ASSERT( v.size() == 3, fc::invalid_arg_exception, "Invalid value ${s} for --cassandra-filter-on", ("s", s));
+               filter_entry fe{v[0], v[1], v[2]};
+               my->filter_on.insert( fe );
+            }
+         } else {
+            my->filter_on_star = true;
+         }
+         if( options.count( "cassandra-filter-out" )) {
+            auto fo = options.at( "cassandra-filter-out" ).as<vector<string>>();
+            for( auto& s : fo ) {
+               std::vector<std::string> v;
+               boost::split( v, s, boost::is_any_of( ":" ));
+               EOS_ASSERT( v.size() == 3, fc::invalid_arg_exception, "Invalid value ${s} for --cassandra-filter-out", ("s", s));
+               filter_entry fe{v[0], v[1], v[2]};
+               my->filter_out.insert( fe );
+            }
          }
          
          std::string url_str = options.at( "cassandra-url" ).as<std::string>();
