@@ -58,6 +58,9 @@ public:
         std::string&& transactionTrace);
     //TODO: onIrreversible
 
+    void truncateTable(const std::string& table);
+    void truncateTables();
+
 
     static const std::string history_keyspace;
     static const std::string account_table;

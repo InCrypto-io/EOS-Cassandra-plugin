@@ -378,6 +378,29 @@ void CassandraClient::insertTransactionTrace(
 }
 
 
+void CassandraClient::truncateTable(const std::string& table)
+{
+    auto statement = cass_statement_new(("TRUNCATE " + table + ";").c_str(), 0);
+    auto gStatement = statement_guard(statement, cass_statement_free);
+    cass_statement_set_request_timeout(statement, 0);
+    auto gFuture = executeStatement(std::move(gStatement));
+    waitFuture(std::move(gFuture));
+}
+    
+void CassandraClient::truncateTables()
+{
+    truncateTable(account_table);
+    truncateTable(account_public_key_table);
+    truncateTable(account_controlling_account_table);
+    truncateTable(account_action_trace_table);
+    truncateTable(account_action_trace_shard_table);
+    truncateTable(action_trace_table);
+    truncateTable(block_table);
+    truncateTable(transaction_table);
+    truncateTable(transaction_trace_table);
+}
+
+
 void CassandraClient::appendStatement(statement_guard&& gStatement, size_t size)
 {
     bool needFlush = false;

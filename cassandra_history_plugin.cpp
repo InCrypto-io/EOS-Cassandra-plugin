@@ -254,6 +254,7 @@ void cassandra_history_plugin_impl::process_accepted_block(chain::block_state_pt
 
 void cassandra_history_plugin_impl::process_accepted_transaction(chain::transaction_metadata_ptr t) {
    const auto& trx = t->trx;
+   if( !filter_include( trx ) ) return;
 
    const auto& trx_id = t->id;
    const auto trx_id_str = trx_id.str();
@@ -287,7 +288,9 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
             upsertAccount(atrace.act, t->block_time);
          }
 
-         base_action_traces.emplace_back( atrace );
+         if (filter_include(atrace.receipt.receiver, atrace.act.name, atrace.act.authorization)) {
+            base_action_traces.emplace_back( atrace );
+         }
 
          auto &inline_traces = atrace.inline_traces;
          for( auto it = inline_traces.rbegin(); it != inline_traces.rend(); ++it ) {
@@ -423,6 +426,8 @@ void cassandra_history_plugin::set_program_options(options_description&, options
    cfg.add_options()
          ("cassandra-url", bpo::value<std::string>(),
           "cassandra URL connection string If not specified then plugin is disabled.")
+         ("cassandra-wipe", bpo::bool_switch()->default_value(false),
+         "Only used with --replay-blockchain, --hard-replay-blockchain, or --delete-all-blocks to wipe cassandra db.")
          ("cassandra-filter-on", bpo::value<vector<string>>()->composing(),
           "Track actions which match receiver:action:actor. Receiver, Action, & Actor may be blank to include all. i.e. eosio:: or :transfer:  Use * or leave unspecified to include all.")
          ("cassandra-filter-out", bpo::value<vector<string>>()->composing(),
@@ -465,6 +470,7 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
             for( auto& s : fo ) {
                std::vector<std::string> v;
                boost::split( v, s, boost::is_any_of( ":" ));
+               std::cout << v[0] << v[1] << v[2] << std::endl;
                EOS_ASSERT( v.size() == 3, fc::invalid_arg_exception, "Invalid value ${s} for --cassandra-filter-out", ("s", s));
                filter_entry fe{v[0], v[1], v[2]};
                my->filter_out.insert( fe );
@@ -473,6 +479,15 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
          
          std::string url_str = options.at( "cassandra-url" ).as<std::string>();
          my->cas_client.reset( new CassandraClient(url_str) );
+
+         if(options.at( "replay-blockchain" ).as<bool>() ||
+            options.at( "hard-replay-blockchain" ).as<bool>() ||
+            options.at( "delete-all-blocks" ).as<bool>()) {
+            if( options.at( "cassandra-wipe" ).as<bool>()) {
+               ilog( "Wiping cassandra on startup" );
+               my->cas_client->truncateTables();
+            }
+         }
 
          my->chain_plug = app().find_plugin<chain_plugin>();
          EOS_ASSERT(my->chain_plug, chain::missing_chain_plugin_exception, "");
