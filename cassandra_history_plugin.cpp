@@ -4,15 +4,22 @@
  */
 #include <eosio/cassandra_history_plugin/cassandra_history_plugin.hpp>
 #include <eosio/cassandra_history_plugin/account_action_trace_shard_object.hpp>
+#include <eosio/chain/config.hpp>
 #include <eosio/chain/exceptions.hpp>
+#include <eosio/chain/transaction.hpp>
+#include <eosio/chain/types.hpp>
 
 #include <fc/io/json.hpp>
 #include <fc/utf8.hpp>
 #include <fc/variant.hpp>
 
 #include <boost/algorithm/string.hpp>
+#include <boost/signals2/connection.hpp>
+#include <boost/thread/thread.hpp>
+#include <boost/thread/mutex.hpp>
 
 #include <ctime>
+#include <deque>
 #include <memory>
 #include <set>
 
@@ -70,10 +77,12 @@ class cassandra_history_plugin_impl {
       return result;
    }
 
-   void accepted_block(const chain::block_state_ptr&);
-   void applied_irreversible_block(const chain::block_state_ptr&);
-   void accepted_transaction(const chain::transaction_metadata_ptr&);
-   void applied_transaction(const chain::transaction_trace_ptr&);
+   void consume_blocks();
+
+   void on_accepted_block(const chain::block_state_ptr&);
+   void on_applied_irreversible_block(const chain::block_state_ptr&);
+   void on_accepted_transaction(const chain::transaction_metadata_ptr&);
+   void on_applied_transaction(const chain::transaction_trace_ptr&);
 
    void process_accepted_block( chain::block_state_ptr );
    //void _process_accepted_block( chain::block_state_ptr );
@@ -98,6 +107,15 @@ class cassandra_history_plugin_impl {
    std::set<filter_entry> filter_on;
    std::set<filter_entry> filter_out;
 
+   template<typename Queue, typename Entry> void queue(Queue& queue, const Entry& e);
+   boost::mutex queue_mtx;
+   boost::condition_variable condition;
+   boost::thread consume_thread;
+
+   std::deque<chain::transaction_metadata_ptr> transaction_metadata_queue;
+   std::deque<chain::transaction_trace_ptr> transaction_trace_queue;
+   std::deque<chain::block_state_ptr> block_state_queue;
+   std::deque<chain::block_state_ptr> irreversible_block_state_queue;
 
    chain_plugin* chain_plug = nullptr;
    boost::atomic<bool> done{false};
@@ -106,7 +124,13 @@ class cassandra_history_plugin_impl {
    fc::microseconds abi_serializer_max_time_ms;
 
    std::unique_ptr<CassandraClient> cas_client;
+
+   static const uint32_t account_actions_per_shard;
 };
+
+
+const uint32_t cassandra_history_plugin_impl::account_actions_per_shard = 10000;
+
 
 bool cassandra_history_plugin_impl::filter_include( const account_name& receiver, const action_name& act_name,
                                            const vector<chain::permission_level>& authorization ) const
@@ -185,9 +209,9 @@ cassandra_history_plugin_impl::~cassandra_history_plugin_impl()
       try {
          ilog( "cassandra_history_plugin shutdown in process please be patient this can take a few minutes" );
          done = true;
-         //condition.notify_one();
+         condition.notify_one();
 
-         //consume_thread.join();
+         consume_thread.join();
       } catch( std::exception& e ) {
          elog( "Exception on cassandra_history_plugin shutdown of consume thread: ${e}", ("e", e.what()));
       }
@@ -195,28 +219,177 @@ cassandra_history_plugin_impl::~cassandra_history_plugin_impl()
 }
 
 void cassandra_history_plugin_impl::init() {
+   ilog("starting consume thread");
+   consume_thread = boost::thread([this] { consume_blocks(); });
 
    startup = false;
 }
 
 
-void cassandra_history_plugin_impl::accepted_block( const chain::block_state_ptr& bs ) {
-   process_accepted_block(bs);
+void cassandra_history_plugin_impl::consume_blocks() {
+   std::deque<chain::transaction_metadata_ptr> transaction_metadata_process_queue;
+   std::deque<chain::transaction_trace_ptr> transaction_trace_process_queue;
+   std::deque<chain::block_state_ptr> block_state_process_queue;
+   std::deque<chain::block_state_ptr> irreversible_block_state_process_queue;
+
+   try {
+      while (true) {
+         boost::mutex::scoped_lock lock(queue_mtx);
+         while ( transaction_metadata_queue.empty() &&
+                 transaction_trace_queue.empty() &&
+                 block_state_queue.empty() &&
+                 irreversible_block_state_queue.empty() &&
+                 !done ) {
+            condition.wait(lock);
+         }
+
+         // capture for processing
+         size_t transaction_metadata_size = transaction_metadata_queue.size();
+         if (transaction_metadata_size > 0) {
+            transaction_metadata_process_queue = move(transaction_metadata_queue);
+            transaction_metadata_queue.clear();
+         }
+         size_t transaction_trace_size = transaction_trace_queue.size();
+         if (transaction_trace_size > 0) {
+            transaction_trace_process_queue = move(transaction_trace_queue);
+            transaction_trace_queue.clear();
+         }
+         size_t block_state_size = block_state_queue.size();
+         if (block_state_size > 0) {
+            block_state_process_queue = move(block_state_queue);
+            block_state_queue.clear();
+         }
+         size_t irreversible_block_size = irreversible_block_state_queue.size();
+         if (irreversible_block_size > 0) {
+            irreversible_block_state_process_queue = move(irreversible_block_state_queue);
+            irreversible_block_state_queue.clear();
+         }
+
+         lock.unlock();
+
+         //if (done) {
+            ilog("draining queue, size: ${q}", ("q", transaction_metadata_size + transaction_trace_size + block_state_size + irreversible_block_size));
+         //}
+
+         // process transactions
+         while (!transaction_trace_process_queue.empty()) {
+            const auto& t = transaction_trace_process_queue.front();
+            process_applied_transaction(t);
+            transaction_trace_process_queue.pop_front();
+         }
+
+         while (!transaction_metadata_process_queue.empty()) {
+            const auto& t = transaction_metadata_process_queue.front();
+            process_accepted_transaction(t);
+            transaction_metadata_process_queue.pop_front();
+         }
+
+         // process blocks
+         while (!block_state_process_queue.empty()) {
+            const auto& bs = block_state_process_queue.front();
+            process_accepted_block( bs );
+            block_state_process_queue.pop_front();
+         }
+
+         // process irreversible blocks
+         while (!irreversible_block_state_process_queue.empty()) {
+            const auto& bs = irreversible_block_state_process_queue.front();
+            process_irreversible_block(bs);
+            irreversible_block_state_process_queue.pop_front();
+         }
+
+         if( transaction_metadata_size == 0 &&
+             transaction_trace_size == 0 &&
+             block_state_size == 0 &&
+             irreversible_block_size == 0 &&
+             done ) {
+            break;
+         }
+      }
+      ilog("elasticsearch_plugin consume thread shutdown gracefully");
+   } catch (fc::exception& e) {
+      elog("FC Exception while consuming block ${e}", ("e", e.to_string()));
+   } catch (std::exception& e) {
+      elog("STD Exception while consuming block ${e}", ("e", e.what()));
+   } catch (...) {
+      elog("Unknown exception while consuming block");
+   }
 }
 
-void cassandra_history_plugin_impl::applied_irreversible_block( const chain::block_state_ptr& bs ) {
-   
+
+template<typename Queue, typename Entry>
+void cassandra_history_plugin_impl::queue( Queue& queue, const Entry& e ) {
+   boost::mutex::scoped_lock lock( queue_mtx );
+   /*auto queue_size = queue.size();
+   if( queue_size > max_queue_size ) {
+      lock.unlock();
+      condition.notify_one();
+      queue_sleep_time += 10;
+      if( queue_sleep_time > 1000 )
+         wlog("queue size: ${q}", ("q", queue_size));
+      boost::this_thread::sleep_for( boost::chrono::milliseconds( queue_sleep_time ));
+      lock.lock();
+   } else {
+      queue_sleep_time -= 10;
+      if( queue_sleep_time < 0 ) queue_sleep_time = 0;
+   }*/
+   queue.emplace_back( e );
+   lock.unlock();
+   condition.notify_one();
 }
 
-void cassandra_history_plugin_impl::accepted_transaction( const chain::transaction_metadata_ptr& t ) {
-   process_accepted_transaction(t);
+
+void cassandra_history_plugin_impl::on_accepted_block( const chain::block_state_ptr& bs ) {
+   try {
+      queue( block_state_queue, bs );
+   } catch (fc::exception& e) {
+      elog("FC Exception while accepted_block ${e}", ("e", e.to_string()));
+   } catch (std::exception& e) {
+      elog("STD Exception while accepted_block ${e}", ("e", e.what()));
+   } catch (...) {
+      elog("Unknown exception while accepted_block");
+   }
 }
 
-void cassandra_history_plugin_impl::applied_transaction( const chain::transaction_trace_ptr& t ) {
-   if( !t->producer_block_id.valid() )
-      return;
-   
-   process_applied_transaction(t);
+void cassandra_history_plugin_impl::on_applied_irreversible_block( const chain::block_state_ptr& bs ) {
+   try {
+      queue( irreversible_block_state_queue, bs );
+   } catch (fc::exception& e) {
+      elog("FC Exception while applied_irreversible_block ${e}", ("e", e.to_string()));
+   } catch (std::exception& e) {
+      elog("STD Exception while applied_irreversible_block ${e}", ("e", e.what()));
+   } catch (...) {
+      elog("Unknown exception while applied_irreversible_block");
+   }
+}
+
+void cassandra_history_plugin_impl::on_accepted_transaction( const chain::transaction_metadata_ptr& t ) {
+   try {
+         queue( transaction_metadata_queue, t );
+   } catch (fc::exception& e) {
+      elog("FC Exception while accepted_transaction ${e}", ("e", e.to_string()));
+   } catch (std::exception& e) {
+      elog("STD Exception while accepted_transaction ${e}", ("e", e.what()));
+   } catch (...) {
+      elog("Unknown exception while accepted_transaction");
+   }
+}
+
+void cassandra_history_plugin_impl::on_applied_transaction( const chain::transaction_trace_ptr& t ) {
+   try {
+      if( !t->producer_block_id.valid() ||
+         !t->receipt || (t->receipt->status != chain::transaction_receipt_header::executed &&
+            t->receipt->status != chain::transaction_receipt_header::soft_fail) )
+         return;
+
+      queue( transaction_trace_queue, t );
+   } catch (fc::exception& e) {
+      elog("FC Exception while applied_transaction ${e}", ("e", e.to_string()));
+   } catch (std::exception& e) {
+      elog("STD Exception while applied_transaction ${e}", ("e", e.what()));
+   } catch (...) {
+      elog("Unknown exception while applied_transaction");
+   }
 }
 
 
@@ -252,6 +425,10 @@ void cassandra_history_plugin_impl::process_accepted_block(chain::block_state_pt
    cas_client->insertBlock(block_id_str, buffer, block_time_point, std::move(json_block));
 }
 
+void cassandra_history_plugin_impl::process_irreversible_block(chain::block_state_ptr bs) {
+   //TODO: implement
+}
+
 void cassandra_history_plugin_impl::process_accepted_transaction(chain::transaction_metadata_ptr t) {
    const auto& trx = t->trx;
    if( !filter_include( trx ) ) return;
@@ -268,7 +445,7 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
 
    std::vector<std::reference_wrapper<chain::base_action_trace>> base_action_traces; // without inline action traces
 
-   bool executed = t->receipt.valid() && t->receipt->status == chain::transaction_receipt_header::executed;
+   bool executed = t->receipt->status == chain::transaction_receipt_header::executed;
 
    std::stack<std::reference_wrapper<chain::action_trace>> stack;
    for( auto& atrace : t->action_traces ) {
@@ -278,11 +455,6 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
       {
          auto &atrace = stack.top().get();
          stack.pop();
-
-         if (atrace.except.valid())
-         {
-            continue;
-         }
 
          if(executed && atrace.receipt.receiver == chain::config::system_account_name) {
             upsertAccount(atrace.act, t->block_time);
@@ -333,6 +505,7 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
       auto aset = account_set(atrace);
       for (auto a : aset)
       {
+         bool need_insert_shard = false;
          int64_t shardId = 0;
          auto itr = idx.find(a);
          if (itr == idx.end())
@@ -343,16 +516,16 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
                obj.timestamp = block_time_ms;
                obj.counter = 1;
             });
-            cas_client->insertAccountActionTraceShard(std::string(a), shardId);
+            need_insert_shard = true;
          }
-         else if (itr->counter == 10000)
+         else if (itr->counter == account_actions_per_shard)
          {
             db.modify<account_action_trace_shard_object>(*itr, [&](auto& obj) {
                obj.timestamp = block_time_ms;
                obj.counter = 1;
             });
             shardId = itr->timestamp;
-            cas_client->insertAccountActionTraceShard(std::string(a), shardId);
+            need_insert_shard = true;
          }
          else
          {
@@ -361,6 +534,10 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
             });
             shardId = itr->timestamp;
          }
+         //TODO: put this to task
+         if (need_insert_shard) {
+            cas_client->insertAccountActionTraceShard(std::string(a), shardId);
+         }
          cas_client->insertAccountActionTrace(std::string(a), shardId, global_seq_buffer, block_time);
       }
    }
@@ -368,6 +545,7 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
    const auto trx_id = t->id;
    const auto trx_id_str = trx_id.str();
    auto block_num = t->block_num;
+   //TODO: put this to task
    std::vector<uint8_t> buffer;
    buffer.reserve(sizeof(block_num));
    for (int i = sizeof(block_num) - 1; i >= 0; --i)
@@ -499,19 +677,19 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
          
          my->accepted_block_connection.emplace(
             chain.accepted_block.connect( [&]( const chain::block_state_ptr& bs ) {
-               my->accepted_block( bs );
+               my->on_accepted_block( bs );
          } ));
          my->irreversible_block_connection.emplace(
             chain.irreversible_block.connect( [&]( const chain::block_state_ptr& bs ) {
-               //my->applied_irreversible_block( bs );
+               //my->on_applied_irreversible_block( bs );
             } ));
          my->accepted_transaction_connection.emplace(
             chain.accepted_transaction.connect( [&]( const chain::transaction_metadata_ptr& t ) {
-               my->accepted_transaction( t );
+               my->on_accepted_transaction( t );
             } ));
          my->applied_transaction_connection.emplace(
             chain.applied_transaction.connect( [&]( const chain::transaction_trace_ptr& t ) {
-               my->applied_transaction( t );
+               my->on_applied_transaction( t );
             } ));
 
          my->init();
