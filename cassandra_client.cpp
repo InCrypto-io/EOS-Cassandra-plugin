@@ -34,8 +34,10 @@ CassandraClient::CassandraClient(const std::string& hostUrl)
     gPreparedInsertAccountPublicKeys_(nullptr, cass_prepared_free),
     gPreparedInsertAccountControls_(nullptr, cass_prepared_free),
     gPreparedInsertAccountActionTrace_(nullptr, cass_prepared_free),
+    gPreparedInsertAccountActionTraceWithParent_(nullptr, cass_prepared_free),
     gPreparedInsertAccountActionTraceShard_(nullptr, cass_prepared_free),
     gPreparedInsertActionTrace_(nullptr, cass_prepared_free),
+    gPreparedInsertActionTraceWithParent_(nullptr, cass_prepared_free),
     gPreparedInsertBlock_(nullptr, cass_prepared_free),
     gPreparedInsertTransaction_(nullptr, cass_prepared_free),
     gPreparedInsertTransactionTrace_(nullptr, cass_prepared_free),
@@ -93,10 +95,14 @@ void CassandraClient::prepareStatements()
         " (name, controlling_name, permission) VALUES(?, ?, ?)";
     std::string insertAccountActionTraceQuery = "INSERT INTO " + account_action_trace_table +
         " (account_name, shard_id, global_seq, block_time) VALUES(?, ?, ?, ?)";
+    std::string insertAccountActionTraceWithParentQuery = "INSERT INTO " + account_action_trace_table +
+        " (account_name, shard_id, global_seq, block_time, parent) VALUES(?, ?, ?, ?, ?)";
     std::string insertAccountActionTraceShardQuery = "INSERT INTO " + account_action_trace_shard_table +
         " (account_name, shard_id) VALUES(?, ?)";
     std::string insertActionTraceQuery = "INSERT INTO " + action_trace_table +
         " (global_seq, block_date, block_time, doc) VALUES(?, ?, ?, ?)";
+    std::string insertActionTraceWithParentQuery = "INSERT INTO " + action_trace_table +
+        " (global_seq, block_date, block_time, parent) VALUES(?, ?, ?, ?)";
     std::string insertBlockQuery = "INSERT INTO " + block_table +
         " (id, block_num, block_date, doc) VALUES(?, ?, ?, ?)";
     std::string insertTransactionQuery = "INSERT INTO " + transaction_table +
@@ -115,18 +121,20 @@ void CassandraClient::prepareStatements()
     };
 
     bool ok = true;
-    ok &= prepare(deleteAccountPublicKeysQuery,       &gPreparedDeleteAccountPublicKeys_);
-    ok &= prepare(deleteAccountControlsQuery,         &gPreparedDeleteAccountControls_);
-    ok &= prepare(insertAccountQuery,                 &gPreparedInsertAccount_);
-    ok &= prepare(insertAccountAbiQuery,              &gPreparedInsertAccountAbi_);
-    ok &= prepare(insertAccountPublicKeysQuery,       &gPreparedInsertAccountPublicKeys_);
-    ok &= prepare(insertAccountControlsQuery,         &gPreparedInsertAccountControls_);
-    ok &= prepare(insertAccountActionTraceQuery,      &gPreparedInsertAccountActionTrace_);
-    ok &= prepare(insertAccountActionTraceShardQuery, &gPreparedInsertAccountActionTraceShard_);
-    ok &= prepare(insertActionTraceQuery,             &gPreparedInsertActionTrace_);
-    ok &= prepare(insertBlockQuery,                   &gPreparedInsertBlock_);
-    ok &= prepare(insertTransactionQuery,             &gPreparedInsertTransaction_);
-    ok &= prepare(insertTransactionTraceQuery,        &gPreparedInsertTransactionTrace_);
+    ok &= prepare(deleteAccountPublicKeysQuery,            &gPreparedDeleteAccountPublicKeys_);
+    ok &= prepare(deleteAccountControlsQuery,              &gPreparedDeleteAccountControls_);
+    ok &= prepare(insertAccountQuery,                      &gPreparedInsertAccount_);
+    ok &= prepare(insertAccountAbiQuery,                   &gPreparedInsertAccountAbi_);
+    ok &= prepare(insertAccountPublicKeysQuery,            &gPreparedInsertAccountPublicKeys_);
+    ok &= prepare(insertAccountControlsQuery,              &gPreparedInsertAccountControls_);
+    ok &= prepare(insertAccountActionTraceQuery,           &gPreparedInsertAccountActionTrace_);
+    ok &= prepare(insertAccountActionTraceWithParentQuery, &gPreparedInsertAccountActionTraceWithParent_);
+    ok &= prepare(insertAccountActionTraceShardQuery,      &gPreparedInsertAccountActionTraceShard_);
+    ok &= prepare(insertActionTraceQuery,                  &gPreparedInsertActionTrace_);
+    ok &= prepare(insertActionTraceWithParentQuery,        &gPreparedInsertActionTraceWithParent_);
+    ok &= prepare(insertBlockQuery,                        &gPreparedInsertBlock_);
+    ok &= prepare(insertTransactionQuery,                  &gPreparedInsertTransaction_);
+    ok &= prepare(insertTransactionTraceQuery,             &gPreparedInsertTransactionTrace_);
 
     if (!ok)
     {
@@ -302,6 +310,25 @@ void CassandraClient::insertAccountActionTrace(
     waitFuture(std::move(gFuture));
 }
 
+void CassandraClient::insertAccountActionTraceWithParent(
+    const std::string& account,
+    int64_t shardId,
+    std::vector<cass_byte_t> globalSeq,
+    fc::time_point blockTime,
+    std::vector<cass_byte_t> parent)
+{
+    int64_t msFromEpoch = (int64_t)blockTime.time_since_epoch().count() / 1000;
+    auto statement = cass_prepared_bind(gPreparedInsertAccountActionTraceWithParent_.get());
+    auto gStatement = statement_guard(statement, cass_statement_free);
+    cass_statement_bind_string_by_name(statement, "account_name", account.c_str());
+    cass_statement_bind_int64_by_name(statement, "shard_id", shardId);
+    cass_statement_bind_bytes_by_name(statement, "global_seq", globalSeq.data(), globalSeq.size());
+    cass_statement_bind_int64_by_name(statement, "block_time", msFromEpoch);
+    cass_statement_bind_bytes_by_name(statement, "parent", parent.data(), parent.size());
+    auto gFuture = executeStatement(std::move(gStatement));
+    waitFuture(std::move(gFuture));
+}
+
 void CassandraClient::insertAccountActionTraceShard(
     const std::string& account,
     int64_t shardId)
@@ -327,6 +354,23 @@ void CassandraClient::insertActionTrace(
     cass_statement_bind_uint32_by_name(statement, "block_date", blockDate);
     cass_statement_bind_int64_by_name(statement, "block_time", msFromEpoch);
     cass_statement_bind_string_by_name(statement, "doc", actionTrace.c_str());
+    auto gFuture = executeStatement(std::move(gStatement));
+    waitFuture(std::move(gFuture));
+}
+
+void CassandraClient::insertActionTraceWithParent(
+    std::vector<cass_byte_t> globalSeq,
+    fc::time_point blockTime,
+    std::vector<cass_byte_t> parent)
+{
+    auto statement = cass_prepared_bind(gPreparedInsertActionTraceWithParent_.get());
+    auto gStatement = statement_guard(statement, cass_statement_free);
+    cass_uint32_t blockDate = cass_date_from_epoch(blockTime.sec_since_epoch());
+    int64_t msFromEpoch = (int64_t)blockTime.time_since_epoch().count() / 1000;
+    cass_statement_bind_bytes_by_name(statement, "global_seq", globalSeq.data(), globalSeq.size());
+    cass_statement_bind_uint32_by_name(statement, "block_date", blockDate);
+    cass_statement_bind_int64_by_name(statement, "block_time", msFromEpoch);
+    cass_statement_bind_bytes_by_name(statement, "parent", parent.data(), parent.size());
     auto gFuture = executeStatement(std::move(gStatement));
     waitFuture(std::move(gFuture));
 }

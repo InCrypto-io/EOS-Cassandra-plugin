@@ -23,10 +23,36 @@
 #include <functional>
 #include <memory>
 #include <set>
+#include <type_traits>
 #include <vector>
 
 #include "cassandra_client.h"
 #include "ThreadPool/ThreadPool.h"
+
+
+template <typename T>
+std::vector<uint8_t> num_to_bytes(T num)
+{
+   static_assert(std::is_integral<T>::value, "num_to_bytes is only for integral types.");
+
+   std::vector<uint8_t> bytes;
+   bytes.reserve(sizeof(num));
+   for (int i = sizeof(num) - 1; i >= 0; --i)
+   {
+      uint8_t byte = (num >> 8 * i);
+      if (bytes.empty() && !byte)
+      {
+         continue;
+      }
+      if (std::is_unsigned<T>::value &&
+         bytes.empty() && byte & 0x80)
+      {
+         bytes.push_back(0x0);
+      }
+      bytes.push_back(byte & 0xFF);
+   }
+   return bytes;
+}
 
 
 namespace eosio {
@@ -48,6 +74,7 @@ struct filter_entry {
              (actor.value == 0 || actor == ar);
    }
 };
+
 
 class cassandra_history_plugin_impl {
    public:
@@ -475,17 +502,19 @@ void cassandra_history_plugin_impl::process_accepted_transaction(chain::transact
 
 void cassandra_history_plugin_impl::process_applied_transaction(chain::transaction_trace_ptr t) {
 
-   std::vector<std::reference_wrapper<chain::base_action_trace>> base_action_traces; // without inline action traces
+   std::vector<std::pair<std::reference_wrapper<chain::action_trace>, uint64_t>> action_traces; // without inline action traces
 
    bool executed = t->receipt->status == chain::transaction_receipt_header::executed;
 
-   std::stack<std::reference_wrapper<chain::action_trace>> stack;
+   std::stack<std::pair<std::reference_wrapper<chain::action_trace>, uint64_t>> stack;
    for( auto& atrace : t->action_traces ) {
-      stack.emplace(atrace);
+      stack.emplace(atrace, 0);
 
       while ( !stack.empty() )
       {
-         auto &atrace = stack.top().get();
+         auto& p = stack.top();
+         auto &atrace = p.first.get();
+         auto parent_seq = p.second;
          stack.pop();
 
          if(executed && atrace.receipt.receiver == chain::config::system_account_name) {
@@ -493,16 +522,19 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
          }
 
          if (filter_include(atrace.receipt.receiver, atrace.act.name, atrace.act.authorization)) {
-            base_action_traces.emplace_back( atrace );
+            action_traces.emplace_back( atrace, parent_seq );
+            if (parent_seq == 0) {
+               parent_seq = atrace.receipt.global_sequence;
+            }
          }
 
          auto &inline_traces = atrace.inline_traces;
          for( auto it = inline_traces.rbegin(); it != inline_traces.rend(); ++it ) {
-            stack.emplace(*it);
+            stack.emplace(*it, parent_seq);
          }
       }
    }
-   if( base_action_traces.empty() ) return;
+   if( action_traces.empty() ) return;
 
    auto block_time = t->block_time;
    auto block_time_ms = (int64_t)block_time.to_time_point().time_since_epoch().count() / 1000;
@@ -513,16 +545,17 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
 
    std::vector<std::function<void()>> inserts;
 
-   for (auto& atrace : base_action_traces)
+   for (auto& p : action_traces)
    {
-      chain::base_action_trace &base = atrace.get();
-      fc::variant atrace_doc = chain.to_variant_with_abi(base, abi_serializer_max_time_ms);
+      auto atrace = p.first;
+      auto parent_seq = p.second;
+      chain::action_trace &at = atrace.get();
 
       std::vector<uint8_t> global_seq_buffer;
-      global_seq_buffer.reserve(sizeof(base.receipt.global_sequence));
-      for (int i = sizeof(base.receipt.global_sequence) - 1; i >= 0; --i)
+      global_seq_buffer.reserve(sizeof(at.receipt.global_sequence));
+      for (int i = sizeof(at.receipt.global_sequence) - 1; i >= 0; --i)
       {
-         uint8_t byte = (base.receipt.global_sequence >> 8 * i);
+         uint8_t byte = (at.receipt.global_sequence >> 8 * i);
          if (global_seq_buffer.empty() && !byte)
          {
             continue;
@@ -534,11 +567,20 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
          global_seq_buffer.push_back(byte & 0xFF);
       }
 
-      inserts.emplace_back([=, doc{std::move(atrace_doc)}]()
-         {
-            auto json_atrace = fc::prune_invalid_utf8(fc::json::to_string(doc));
-            cas_client->insertActionTrace(global_seq_buffer, block_time, std::move(json_atrace));
-         });
+      if (parent_seq == 0) {
+            fc::variant atrace_doc = chain.to_variant_with_abi(at, abi_serializer_max_time_ms);
+            inserts.emplace_back([=, doc{std::move(atrace_doc)}]()
+            {
+               auto json_atrace = fc::prune_invalid_utf8(fc::json::to_string(doc));
+               cas_client->insertActionTrace(global_seq_buffer, block_time, std::move(json_atrace));
+            });
+      }
+      else {
+         inserts.emplace_back([=]()
+            {
+               cas_client->insertActionTraceWithParent(global_seq_buffer, block_time, num_to_bytes(parent_seq));
+            });
+      }
       auto aset = account_set(atrace);
       for (auto a : aset)
       {
@@ -576,7 +618,12 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
                if (need_insert_shard) {
                   cas_client->insertAccountActionTraceShard(name, shardId);
                }
-               cas_client->insertAccountActionTrace(name, shardId, global_seq_buffer, block_time);
+               if (parent_seq == 0) {
+                  cas_client->insertAccountActionTrace(name, shardId, global_seq_buffer, block_time);
+               }
+               else {
+                  cas_client->insertAccountActionTraceWithParent(name, shardId, global_seq_buffer, block_time, num_to_bytes(parent_seq));
+               }
             });
       }
    }

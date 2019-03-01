@@ -36,6 +36,12 @@ public:
         int64_t shardId,
         std::vector<cass_byte_t> globalSeq,
         fc::time_point blockTime);
+    void insertAccountActionTraceWithParent(
+        const std::string& account,
+        int64_t shardId,
+        std::vector<cass_byte_t> globalSeq,
+        fc::time_point blockTime,
+        std::vector<cass_byte_t> parent);
     void insertAccountActionTraceShard(
         const std::string& account,
         int64_t shardId);
@@ -43,6 +49,10 @@ public:
         std::vector<cass_byte_t> globalSeq,
         fc::time_point blockTime,
         std::string&& actionTrace);
+    void insertActionTraceWithParent(
+        std::vector<cass_byte_t> globalSeq,
+        fc::time_point blockTime,
+        std::vector<cass_byte_t> parent);
     void insertBlock(
         const std::string& id,
         std::vector<cass_byte_t> blockNumBuffer,
@@ -92,8 +102,10 @@ private:
     prepared_guard gPreparedInsertAccountPublicKeys_;
     prepared_guard gPreparedInsertAccountControls_;
     prepared_guard gPreparedInsertAccountActionTrace_;
+    prepared_guard gPreparedInsertAccountActionTraceWithParent_;
     prepared_guard gPreparedInsertAccountActionTraceShard_;
     prepared_guard gPreparedInsertActionTrace_;
+    prepared_guard gPreparedInsertActionTraceWithParent_;
     prepared_guard gPreparedInsertBlock_;
     prepared_guard gPreparedInsertTransaction_;
     prepared_guard gPreparedInsertTransactionTrace_;
