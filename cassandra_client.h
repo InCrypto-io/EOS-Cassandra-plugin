@@ -56,8 +56,8 @@ public:
     void insertBlock(
         const std::string& id,
         std::vector<cass_byte_t> blockNumBuffer,
-        fc::time_point blockTime,
-        std::string&& block);
+        std::string&& block,
+        bool irreversible);
     void insertTransaction(
         const std::string& id,
         std::string&& transaction);
@@ -66,7 +66,6 @@ public:
         std::vector<cass_byte_t> blockNumBuffer,
         fc::time_point blockTime,
         std::string&& transactionTrace);
-    //TODO: onIrreversible
 
     void truncateTable(const std::string& table);
     void truncateTables();
@@ -80,6 +79,7 @@ public:
     static const std::string account_action_trace_shard_table;
     static const std::string action_trace_table;
     static const std::string block_table;
+    static const std::string lib_table;
     static const std::string transaction_table;
     static const std::string transaction_trace_table;
 
@@ -87,9 +87,7 @@ private:
     CassandraClient(const CassandraClient& other) = delete;
     CassandraClient& operator=(const CassandraClient& other) = delete;
 
-    void appendStatement(statement_guard&& gStatement, size_t size);
     future_guard executeStatement(statement_guard&& gStatement);
-    void flushBatch(batch_guard&& gBatch);
     void waitFuture(future_guard&& gFuture);
 
 
@@ -107,11 +105,8 @@ private:
     prepared_guard gPreparedInsertActionTrace_;
     prepared_guard gPreparedInsertActionTraceWithParent_;
     prepared_guard gPreparedInsertBlock_;
+    prepared_guard gPreparedInsertIrreversibleBlock_;
     prepared_guard gPreparedInsertTransaction_;
     prepared_guard gPreparedInsertTransactionTrace_;
-
-    const size_t MAX_BATCH_SIZE = 100 * 1024; //in bytes
-    size_t totalBatchSize_;
-    std::mutex batchMutex_;
-    batch_guard gBatch_;
+    prepared_guard gPreparedUpdateIrreversible_;
 };

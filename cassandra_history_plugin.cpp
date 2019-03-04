@@ -456,31 +456,26 @@ void cassandra_history_plugin_impl::process_accepted_block(chain::block_state_pt
 
          const auto block_id = bs->id;
          const auto block_id_str = block_id.str();
-         std::vector<uint8_t> buffer;
-         buffer.reserve(sizeof(block_num));
-         for (int i = sizeof(block_num) - 1; i >= 0; --i)
-         {
-            uint8_t byte = (block_num >> 8 * i);
-            if (buffer.empty() && !byte)
-            {
-               continue;
-            }
-            if (buffer.empty() && byte & 0x80)
-            {
-               buffer.push_back(0x0);
-            }
-            buffer.push_back(byte & 0xFF);
-         }
-         auto block_time_point = bs->header.timestamp.to_time_point();
          fc::variant bs_doc(bs);
          auto json_block = fc::prune_invalid_utf8(fc::json::to_string(bs_doc));
 
-         cas_client->insertBlock(block_id_str, buffer, block_time_point, std::move(json_block));
+         cas_client->insertBlock(block_id_str, num_to_bytes(block_num), std::move(json_block), false);
       });
 }
 
 void cassandra_history_plugin_impl::process_irreversible_block(chain::block_state_ptr bs) {
-   //TODO: implement
+   check_task_queue_size();
+   thread_pool->enqueue(
+      [ bs{std::move(bs)}, this ]()
+      {
+         auto block_num = bs->block_num;
+         const auto block_id = bs->id;
+         const auto block_id_str = block_id.str();
+         fc::variant bs_doc(bs);
+         auto json_block = fc::prune_invalid_utf8(fc::json::to_string(bs_doc));
+
+         cas_client->insertBlock(block_id_str, num_to_bytes(block_num), std::move(json_block), true);
+      });
 }
 
 void cassandra_history_plugin_impl::process_accepted_transaction(chain::transaction_metadata_ptr t) {
@@ -550,22 +545,7 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
       auto atrace = p.first;
       auto parent_seq = p.second;
       chain::action_trace &at = atrace.get();
-
-      std::vector<uint8_t> global_seq_buffer;
-      global_seq_buffer.reserve(sizeof(at.receipt.global_sequence));
-      for (int i = sizeof(at.receipt.global_sequence) - 1; i >= 0; --i)
-      {
-         uint8_t byte = (at.receipt.global_sequence >> 8 * i);
-         if (global_seq_buffer.empty() && !byte)
-         {
-            continue;
-         }
-         if (global_seq_buffer.empty() && byte & 0x80)
-         {
-            global_seq_buffer.push_back(0x0);
-         }
-         global_seq_buffer.push_back(byte & 0xFF);
-      }
+      auto global_seq_buffer = num_to_bytes(at.receipt.global_sequence);
 
       if (parent_seq == 0) {
             fc::variant atrace_doc = chain.to_variant_with_abi(at, abi_serializer_max_time_ms);
@@ -635,24 +615,9 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
          const auto trx_id = t->id;
          const auto trx_id_str = trx_id.str();
          auto block_num = t->block_num;
-         std::vector<uint8_t> buffer;
-         buffer.reserve(sizeof(block_num));
-         for (int i = sizeof(block_num) - 1; i >= 0; --i)
-         {
-            uint8_t byte = (block_num >> 8 * i);
-            if (buffer.empty() && !byte)
-            {
-               continue;
-            }
-            if (buffer.empty() && byte & 0x80)
-            {
-               buffer.push_back(0x0);
-            }
-            buffer.push_back(byte & 0xFF);
-         }
          fc::variant trx_trace_doc(t);
          auto json_trx_trace = fc::prune_invalid_utf8(fc::json::to_string(trx_trace_doc));
-         cas_client->insertTransactionTrace(trx_id_str, buffer, block_time, std::move(json_trx_trace));
+         cas_client->insertTransactionTrace(trx_id_str, num_to_bytes(block_num), block_time, std::move(json_trx_trace));
 
          for (auto& f : inserts)
          {
@@ -788,7 +753,7 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
          } ));
          my->irreversible_block_connection.emplace(
             chain.irreversible_block.connect( [&]( const chain::block_state_ptr& bs ) {
-               //my->on_applied_irreversible_block( bs );
+               my->on_applied_irreversible_block( bs );
             } ));
          my->accepted_transaction_connection.emplace(
             chain.accepted_transaction.connect( [&]( const chain::transaction_metadata_ptr& t ) {

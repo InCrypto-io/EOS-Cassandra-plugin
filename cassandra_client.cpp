@@ -20,6 +20,7 @@ const std::string CassandraClient::account_action_trace_table        = "account_
 const std::string CassandraClient::account_action_trace_shard_table  = "account_action_trace_shard";
 const std::string CassandraClient::action_trace_table                = "action_trace";
 const std::string CassandraClient::block_table                       = "block";
+const std::string CassandraClient::lib_table                         = "lib";
 const std::string CassandraClient::transaction_table                 = "transaction";
 const std::string CassandraClient::transaction_trace_table           = "transaction_trace";
 
@@ -39,10 +40,10 @@ CassandraClient::CassandraClient(const std::string& hostUrl)
     gPreparedInsertActionTrace_(nullptr, cass_prepared_free),
     gPreparedInsertActionTraceWithParent_(nullptr, cass_prepared_free),
     gPreparedInsertBlock_(nullptr, cass_prepared_free),
+    gPreparedInsertIrreversibleBlock_(nullptr, cass_prepared_free),
     gPreparedInsertTransaction_(nullptr, cass_prepared_free),
     gPreparedInsertTransactionTrace_(nullptr, cass_prepared_free),
-    totalBatchSize_(0),
-    gBatch_(cass_batch_new(CASS_BATCH_TYPE_LOGGED), cass_batch_free)
+    gPreparedUpdateIrreversible_(nullptr, cass_prepared_free)
 {
     CassCluster* cluster;
     CassSession* session;
@@ -72,10 +73,6 @@ CassandraClient::CassandraClient(const std::string& hostUrl)
 
 CassandraClient::~CassandraClient()
 {
-    if (totalBatchSize_ != 0)
-    {
-        flushBatch(std::move(gBatch_));
-    }
 }
 
 
@@ -104,11 +101,15 @@ void CassandraClient::prepareStatements()
     std::string insertActionTraceWithParentQuery = "INSERT INTO " + action_trace_table +
         " (global_seq, block_date, block_time, parent) VALUES(?, ?, ?, ?)";
     std::string insertBlockQuery = "INSERT INTO " + block_table +
-        " (id, block_num, block_date, doc) VALUES(?, ?, ?, ?)";
+        " (id, block_num, doc) VALUES(?, ?, ?)";
+    std::string insertIrreversibleBlockQuery = "INSERT INTO " + block_table +
+        " (id, block_num, irreversible, doc) VALUES(?, ?, true, ?)";
     std::string insertTransactionQuery = "INSERT INTO " + transaction_table +
         " (id, doc) VALUES(?, ?)";
     std::string insertTransactionTraceQuery = "INSERT INTO " + transaction_trace_table +
         " (id, block_num, block_date, doc) VALUES(?, ?, ?, ?)";
+    std::string updateIrreversibleQuery = "UPDATE " + lib_table +
+        " SET block_num=? where part_key=0 IF block_num<?";
 
     auto prepare = [this](const std::string& query, prepared_guard* prepared) -> bool
     {
@@ -133,8 +134,10 @@ void CassandraClient::prepareStatements()
     ok &= prepare(insertActionTraceQuery,                  &gPreparedInsertActionTrace_);
     ok &= prepare(insertActionTraceWithParentQuery,        &gPreparedInsertActionTraceWithParent_);
     ok &= prepare(insertBlockQuery,                        &gPreparedInsertBlock_);
+    ok &= prepare(insertIrreversibleBlockQuery,            &gPreparedInsertIrreversibleBlock_);
     ok &= prepare(insertTransactionQuery,                  &gPreparedInsertTransaction_);
     ok &= prepare(insertTransactionTraceQuery,             &gPreparedInsertTransactionTrace_);
+    ok &= prepare(updateIrreversibleQuery,                 &gPreparedUpdateIrreversible_);
 
     if (!ok)
     {
@@ -378,17 +381,28 @@ void CassandraClient::insertActionTraceWithParent(
 void CassandraClient::insertBlock(
     const std::string& id,
     std::vector<cass_byte_t> blockNumBuffer,
-    fc::time_point blockTime,
-    std::string&& block)
+    std::string&& block,
+    bool irreversible)
 {
-    auto statement = cass_prepared_bind(gPreparedInsertBlock_.get());
+    CassStatement* statement = nullptr;
+    if (irreversible) {
+        statement = cass_prepared_bind(gPreparedInsertIrreversibleBlock_.get());
+    }
+    else {
+        statement = cass_prepared_bind(gPreparedInsertBlock_.get());
+    }
     auto gStatement = statement_guard(statement, cass_statement_free);
-    cass_uint32_t blockDate = cass_date_from_epoch(blockTime.sec_since_epoch());
     cass_statement_bind_string_by_name(statement, "id", id.c_str());
     cass_statement_bind_bytes_by_name(statement, "block_num", blockNumBuffer.data(), blockNumBuffer.size());
-    cass_statement_bind_uint32_by_name(statement, "block_date", blockDate);
     cass_statement_bind_string_by_name(statement, "doc", block.c_str());
     auto gFuture = executeStatement(std::move(gStatement));
+    if (irreversible) {
+        statement = cass_prepared_bind(gPreparedUpdateIrreversible_.get());
+        gStatement.reset(statement);
+        cass_statement_bind_bytes_by_name(statement, "block_num", blockNumBuffer.data(), blockNumBuffer.size());
+        auto gFuture = executeStatement(std::move(gStatement));
+        waitFuture(std::move(gFuture));
+    }
     waitFuture(std::move(gFuture));
 }
 
@@ -440,52 +454,22 @@ void CassandraClient::truncateTables()
     truncateTable(account_action_trace_shard_table);
     truncateTable(action_trace_table);
     truncateTable(block_table);
+    truncateTable(lib_table);
     truncateTable(transaction_table);
     truncateTable(transaction_trace_table);
+
+    auto statement = cass_statement_new(("INSERT INTO " + lib_table + "(part_key, block_num) VALUES(0, 0);").c_str(), 0);
+    auto gStatement = statement_guard(statement, cass_statement_free);
+    auto gFuture = executeStatement(std::move(gStatement));
+    waitFuture(std::move(gFuture));
 }
 
-
-void CassandraClient::appendStatement(statement_guard&& gStatement, size_t size)
-{
-    bool needFlush = false;
-    batch_guard tmp = batch_guard(cass_batch_new(CASS_BATCH_TYPE_LOGGED), cass_batch_free);
-    {
-        std::lock_guard<std::mutex> guard(batchMutex_);
-        cass_batch_add_statement(gBatch_.get(), gStatement.get());
-        totalBatchSize_ += size;
-        if (totalBatchSize_ > MAX_BATCH_SIZE)
-        {
-            needFlush = true;
-            gBatch_.swap(tmp);
-            totalBatchSize_ = 0;
-        }
-    }
-    if (needFlush) {
-        flushBatch(std::move(tmp));
-    }
-}
 
 future_guard CassandraClient::executeStatement(statement_guard&& gStatement)
 {
     auto statement = gStatement.get();
     auto resultFuture = cass_session_execute(gSession_.get(), statement);
     return future_guard(resultFuture, cass_future_free);
-}
-
-void CassandraClient::flushBatch(batch_guard&& gBatch)
-{
-    CassFuture* batchFuture = cass_session_execute_batch(gSession_.get(), gBatch.get());
-    auto gFuture = future_guard(batchFuture, cass_future_free);
-    if(cass_future_error_code(batchFuture) == CASS_OK) {
-        //std::cout << "Success!" << std::endl;
-    } else {
-        const char* message;
-        size_t message_length;
-        cass_future_error_message(batchFuture, &message, &message_length);
-        fprintf(stderr, "Unable to run query: '%.*s'\n",
-            (int)message_length, message);
-        appbase::app().quit();
-    }
 }
 
 void CassandraClient::waitFuture(future_guard&& gFuture)
