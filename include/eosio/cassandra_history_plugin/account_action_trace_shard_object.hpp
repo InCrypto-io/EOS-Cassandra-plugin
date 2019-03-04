@@ -9,7 +9,7 @@ namespace eosio
     using chain::account_name;
     using namespace boost::multi_index;
 
-    class account_action_trace_shard_object : public chainbase::object<chain::account_action_trace_shard_object_type, account_action_trace_shard_object> {
+    class account_action_trace_shard_object : public chainbase::object<0, account_action_trace_shard_object> {
         OBJECT_CTOR(account_action_trace_shard_object)
 
         id_type      id;

@@ -159,6 +159,7 @@ class cassandra_history_plugin_impl {
    fc::optional<chain::chain_id_type> chain_id;
    fc::microseconds abi_serializer_max_time_ms;
 
+   std::unique_ptr<chainbase::database> db;
    std::unique_ptr<CassandraClient> cas_client;
 
    size_t max_task_queue_size = 0;
@@ -564,8 +565,7 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
    auto block_time_ms = (int64_t)block_time.to_time_point().time_since_epoch().count() / 1000;
 
    auto& chain = chain_plug->chain();
-   chainbase::database& db = const_cast<chainbase::database&>( chain.db() );
-   const auto& idx = db.get_index<account_action_trace_shard_multi_index, by_account>();
+   const auto& idx = db->get_index<account_action_trace_shard_multi_index, by_account>();
 
    std::vector<std::function<void()>> inserts;
 
@@ -599,7 +599,7 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
          if (itr == idx.end())
          {
             shardId = block_time_ms;
-            db.create<account_action_trace_shard_object>([&]( auto& obj ) {
+            db->create<account_action_trace_shard_object>([&]( auto& obj ) {
                obj.account = a;
                obj.timestamp = block_time_ms;
                obj.counter = 1;
@@ -608,7 +608,7 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
          }
          else if (itr->counter == account_actions_per_shard)
          {
-            db.modify<account_action_trace_shard_object>(*itr, [&](auto& obj) {
+            db->modify<account_action_trace_shard_object>(*itr, [&](auto& obj) {
                obj.timestamp = block_time_ms;
                obj.counter = 1;
             });
@@ -617,7 +617,7 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
          }
          else
          {
-            db.modify<account_action_trace_shard_object>(*itr, [&](auto& obj) {
+            db->modify<account_action_trace_shard_object>(*itr, [&](auto& obj) {
                obj.counter = obj.counter + 1;
             });
             shardId = itr->timestamp;
@@ -702,6 +702,8 @@ void cassandra_history_plugin::set_program_options(options_description&, options
           "The target queue size between nodeos and thread pool.")
          ("cassandra-thread-pool-size", bpo::value<size_t>()->default_value(4),
           "The size of the data processing thread pool.")
+         ("cassandra-shard-db-size-mb", bpo::value<size_t>()->default_value(512),
+          "Maximum size(megabytes) of the shard database.")
          ;
 }
 
@@ -709,6 +711,10 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
    try {
       if( options.count( "cassandra-url" )) {
          ilog( "initializing cassandra_history_plugin" );
+
+         auto db_size = options.at("cassandra-shard-db-size-mb").as<size_t>();
+         my->db.reset(new chainbase::database(app().data_dir() / "cass_shard", chain::database::read_write, db_size*1024*1024ll));
+         my->db->add_index<account_action_trace_shard_multi_index>();
 
          if( options.count( "abi-serializer-max-time-ms" )) {
             uint32_t max_time = options.at( "abi-serializer-max-time-ms" ).as<uint32_t>();
@@ -772,9 +778,6 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
          EOS_ASSERT(my->chain_plug, chain::missing_chain_plugin_exception, "");
          auto& chain = my->chain_plug->chain();
          my->chain_id.emplace( chain.get_chain_id());
-
-         chainbase::database& db = const_cast<chainbase::database&>( chain.db() );
-         db.add_index<account_action_trace_shard_multi_index>();
          
          my->accepted_block_connection.emplace(
             chain.accepted_block.connect( [&]( const chain::block_state_ptr& bs ) {
