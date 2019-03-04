@@ -150,6 +150,9 @@ class cassandra_history_plugin_impl {
    std::deque<chain::block_state_ptr> block_state_queue;
    std::deque<chain::block_state_ptr> irreversible_block_state_queue;
 
+   std::queue<std::function<void()>> upsert_account_task_queue;
+   boost::mutex upsert_account_task_mtx;
+
    chain_plugin* chain_plug = nullptr;
    boost::atomic<bool> done{false};
    boost::atomic<bool> startup{true};
@@ -497,7 +500,8 @@ void cassandra_history_plugin_impl::process_accepted_transaction(chain::transact
 
 void cassandra_history_plugin_impl::process_applied_transaction(chain::transaction_trace_ptr t) {
 
-   std::vector<std::pair<std::reference_wrapper<chain::action_trace>, uint64_t>> action_traces; // without inline action traces
+   std::vector<std::pair<std::reference_wrapper<chain::action_trace>, uint64_t>> action_traces;
+   std::vector<std::pair<eosio::chain::action, eosio::chain::block_timestamp_type>> upsertAccountActions;
 
    bool executed = t->receipt->status == chain::transaction_receipt_header::executed;
 
@@ -513,7 +517,7 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
          stack.pop();
 
          if(executed && atrace.receipt.receiver == chain::config::system_account_name) {
-            upsertAccount(atrace.act, t->block_time); //TODO: put to queue and execute in thread pool
+            upsertAccountActions.emplace_back(atrace.act, t->block_time);
          }
 
          if (filter_include(atrace.receipt.receiver, atrace.act.name, atrace.act.authorization)) {
@@ -529,6 +533,31 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
          }
       }
    }
+
+   if (!upsertAccountActions.empty()) {
+      auto f = [upsertAccountActions{ std::move(upsertAccountActions) }, this]()
+      {
+         for (auto& p : upsertAccountActions)
+         {
+            upsertAccount(p.first, p.second);
+         }
+      };
+      {
+         boost::mutex::scoped_lock guard(upsert_account_task_mtx);
+         upsert_account_task_queue.emplace( std::move(f) );
+      }
+      check_task_queue_size();
+      thread_pool->enqueue(
+         [ this ]()
+         {
+            boost::mutex::scoped_lock guard(upsert_account_task_mtx);
+            std::function<void()> task = std::move( upsert_account_task_queue.front() );
+            task();
+            upsert_account_task_queue.pop();
+         }
+      );
+   }
+   
    if( action_traces.empty() ) return;
 
    auto block_time = t->block_time;
