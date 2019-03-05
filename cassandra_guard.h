@@ -51,6 +51,7 @@ public:
     }
 
     auto get() const { return raw_; }
+    void drop() { raw_ = nullptr; }
     void reset(T* p = nullptr)
     {
         if (raw_ == p)

@@ -472,6 +472,83 @@ void CassandraClient::truncateTables()
 }
 
 
+statement_guard CassandraClient::createInsertAccountActionTraceStatement(
+    const std::string& account,
+    int64_t shardId,
+    std::vector<cass_byte_t> globalSeq,
+    fc::time_point blockTime) const
+{
+    int64_t msFromEpoch = (int64_t)blockTime.time_since_epoch().count() / 1000;
+    auto statement = cass_prepared_bind(gPreparedInsertAccountActionTrace_.get());
+    auto gStatement = statement_guard(statement, cass_statement_free);
+    cass_statement_bind_string_by_name(statement, "account_name", account.c_str());
+    cass_statement_bind_int64_by_name(statement, "shard_id", shardId);
+    cass_statement_bind_bytes_by_name(statement, "global_seq", globalSeq.data(), globalSeq.size());
+    cass_statement_bind_int64_by_name(statement, "block_time", msFromEpoch);
+    return gStatement;
+}
+
+statement_guard CassandraClient::createInsertAccountActionTraceWithParentStatement(
+    const std::string& account,
+    int64_t shardId,
+    std::vector<cass_byte_t> globalSeq,
+    fc::time_point blockTime,
+    std::vector<cass_byte_t> parent) const
+{
+    int64_t msFromEpoch = (int64_t)blockTime.time_since_epoch().count() / 1000;
+    auto statement = cass_prepared_bind(gPreparedInsertAccountActionTraceWithParent_.get());
+    auto gStatement = statement_guard(statement, cass_statement_free);
+    cass_statement_bind_string_by_name(statement, "account_name", account.c_str());
+    cass_statement_bind_int64_by_name(statement, "shard_id", shardId);
+    cass_statement_bind_bytes_by_name(statement, "global_seq", globalSeq.data(), globalSeq.size());
+    cass_statement_bind_int64_by_name(statement, "block_time", msFromEpoch);
+    cass_statement_bind_bytes_by_name(statement, "parent", parent.data(), parent.size());
+    return gStatement;
+}
+
+statement_guard CassandraClient::createInsertAccountActionTraceShardStatement(
+    const std::string& account,
+    int64_t shardId) const
+{
+    auto statement = cass_prepared_bind(gPreparedInsertAccountActionTraceShard_.get());
+    auto gStatement = statement_guard(statement, cass_statement_free);
+    cass_statement_bind_string_by_name(statement, "account_name", account.c_str());
+    cass_statement_bind_int64_by_name(statement, "shard_id", shardId);
+    return gStatement;
+}
+
+statement_guard CassandraClient::createInsertActionTraceWithParentStatement(
+    std::vector<cass_byte_t> globalSeq,
+    fc::time_point blockTime,
+    std::vector<cass_byte_t> parent) const
+{
+    auto statement = cass_prepared_bind(gPreparedInsertActionTraceWithParent_.get());
+    auto gStatement = statement_guard(statement, cass_statement_free);
+    cass_uint32_t blockDate = cass_date_from_epoch(blockTime.sec_since_epoch());
+    int64_t msFromEpoch = (int64_t)blockTime.time_since_epoch().count() / 1000;
+    cass_statement_bind_bytes_by_name(statement, "global_seq", globalSeq.data(), globalSeq.size());
+    cass_statement_bind_uint32_by_name(statement, "block_date", blockDate);
+    cass_statement_bind_int64_by_name(statement, "block_time", msFromEpoch);
+    cass_statement_bind_bytes_by_name(statement, "parent", parent.data(), parent.size());
+    return gStatement;
+}
+
+future_guard CassandraClient::executeBatch(batch_guard&& b)
+{
+    return future_guard(cass_session_execute_batch(gSession_.get(), b.get()), cass_future_free);
+}
+
+batch_guard CassandraClient::createLoggedBatch()
+{
+    return batch_guard(cass_batch_new(CASS_BATCH_TYPE_LOGGED), cass_batch_free);
+}
+
+batch_guard CassandraClient::createUnloggedBatch()
+{
+    return batch_guard(cass_batch_new(CASS_BATCH_TYPE_UNLOGGED), cass_batch_free);
+}
+
+
 future_guard CassandraClient::executeStatement(statement_guard&& gStatement)
 {
     auto statement = gStatement.get();

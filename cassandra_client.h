@@ -71,6 +71,32 @@ public:
     void truncateTables();
 
 
+    statement_guard createInsertAccountActionTraceStatement(
+        const std::string& account,
+        int64_t shardId,
+        std::vector<cass_byte_t> globalSeq,
+        fc::time_point blockTime) const;
+    statement_guard createInsertAccountActionTraceWithParentStatement(
+        const std::string& account,
+        int64_t shardId,
+        std::vector<cass_byte_t> globalSeq,
+        fc::time_point blockTime,
+        std::vector<cass_byte_t> parent) const;
+    statement_guard createInsertAccountActionTraceShardStatement(
+        const std::string& account,
+        int64_t shardId) const;
+    statement_guard createInsertActionTraceWithParentStatement(
+        std::vector<cass_byte_t> globalSeq,
+        fc::time_point blockTime,
+        std::vector<cass_byte_t> parent) const;
+
+    future_guard executeBatch(batch_guard&& b);
+    void waitFuture(future_guard&& gFuture);
+
+    static batch_guard createLoggedBatch();
+    static batch_guard createUnloggedBatch();
+
+
     static const std::string history_keyspace;
     static const std::string account_table;
     static const std::string account_public_key_table;
@@ -88,8 +114,6 @@ private:
     CassandraClient& operator=(const CassandraClient& other) = delete;
 
     future_guard executeStatement(statement_guard&& gStatement);
-    void waitFuture(future_guard&& gFuture);
-
 
     cluster_guard gCluster_;
     session_guard gSession_;

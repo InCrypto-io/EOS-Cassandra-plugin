@@ -548,6 +548,8 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
    auto& chain = chain_plug->chain();
    const auto& idx = db->get_index<account_action_trace_shard_multi_index, by_account>();
 
+   auto tracesBatch = cas_client->createUnloggedBatch();
+   auto accountTracesBatch = cas_client->createLoggedBatch();
    std::vector<std::function<void()>> inserts;
 
    for (auto& p : action_traces)
@@ -566,10 +568,8 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
             });
       }
       else {
-         inserts.emplace_back([=]()
-            {
-               cas_client->insertActionTraceWithParent(global_seq_buffer, block_time, num_to_bytes(parent_seq));
-            });
+         auto stmt = cas_client->createInsertActionTraceWithParentStatement(global_seq_buffer, block_time, num_to_bytes(parent_seq));
+         cass_batch_add_statement(tracesBatch.get(), stmt.get());
       }
       std::set<account_name> aset = { at.receipt.receiver };
       std::transform(std::begin(at.act.authorization), std::end(at.act.authorization),
@@ -605,25 +605,28 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
             });
             shardId = itr->timestamp;
          }
-         inserts.emplace_back([=, name{std::string(a)}]()
-            {
-               if (need_insert_shard) {
-                  cas_client->insertAccountActionTraceShard(name, shardId);
-               }
-               if (parent_seq == 0) {
-                  cas_client->insertAccountActionTrace(name, shardId, global_seq_buffer, block_time);
-               }
-               else {
-                  cas_client->insertAccountActionTraceWithParent(name, shardId, global_seq_buffer, block_time, num_to_bytes(parent_seq));
-               }
-            });
+         auto name = std::string(a);
+         if (need_insert_shard) {
+            auto stmt = cas_client->createInsertAccountActionTraceShardStatement(name, shardId);
+            cass_batch_add_statement(accountTracesBatch.get(), stmt.get());
+         }
+         if (parent_seq == 0) {
+            auto stmt = cas_client->createInsertAccountActionTraceStatement(name, shardId, global_seq_buffer, block_time);
+            cass_batch_add_statement(accountTracesBatch.get(), stmt.get());
+         }
+         else {
+            auto stmt = cas_client->createInsertAccountActionTraceWithParentStatement(name, shardId, global_seq_buffer, block_time, num_to_bytes(parent_seq));
+            cass_batch_add_statement(accountTracesBatch.get(), stmt.get());
+         }
       }
    }
 
    check_task_queue_size();
    thread_pool->enqueue(
-      [ t{std::move(t)}, block_time, inserts{std::move(inserts)}, this ]()
+      [ t{std::move(t)}, block_time, rawTracesBatch{tracesBatch.get()}, rawaccountTracesBatch{accountTracesBatch.get()}, inserts{std::move(inserts)}, this ]()
       {
+         batch_guard tracesBatch(rawTracesBatch, cass_batch_free);
+         batch_guard accountTracesBatch(rawaccountTracesBatch, cass_batch_free);
          const auto trx_id = t->id;
          const auto trx_id_str = trx_id.str();
          auto block_num = t->block_num;
@@ -631,11 +634,17 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
          auto json_trx_trace = fc::prune_invalid_utf8(fc::json::to_string(trx_trace_doc));
          cas_client->insertTransactionTrace(trx_id_str, num_to_bytes(block_num), block_time, std::move(json_trx_trace));
 
+         auto f = cas_client->executeBatch(std::move(tracesBatch));
+         cas_client->waitFuture(std::move(f));
          for (auto& f : inserts)
          {
             f();
          }
+         f = cas_client->executeBatch(std::move(accountTracesBatch));
+         cas_client->waitFuture(std::move(f));
       });
+   tracesBatch.drop();
+   accountTracesBatch.drop();
 }
 
 void cassandra_history_plugin_impl::upsertAccount(
