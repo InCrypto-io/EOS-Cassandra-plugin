@@ -57,17 +57,21 @@ CassandraClient::CassandraClient(const std::string& hostUrl)
     session = cass_session_new();
     gSession_.reset(session);
     connectFuture = cass_session_connect_keyspace(session, cluster, history_keyspace.c_str());
-    auto g_future = future_guard(connectFuture, cass_future_free);
+    auto gFuture = future_guard(connectFuture, cass_future_free);
     err = cass_future_error_code(connectFuture);
 
     if (err == CASS_OK)
     {
-        std::cout << "Connected" << std::endl;
+        ilog("Connected to Apache Cassandra");
         prepareStatements();
     }
     else
     {
-        std::cout << "Not connected" << std::endl;
+        const char* message;
+        size_t message_length;
+        cass_future_error_message(connectFuture, &message, &message_length);
+        elog("Unable to connect to Apache Cassandra: ${desc}", ("desc", std::string(message, message_length)));
+        appbase::app().quit();
     }
 }
 
@@ -116,7 +120,10 @@ void CassandraClient::prepareStatements()
         auto prepareFuture = cass_session_prepare(gSession_.get(), query.c_str());
         future_guard gFuture(prepareFuture, cass_future_free);
         auto rc = cass_future_error_code(prepareFuture);
-        printf("Prepare result: %s\n", cass_error_desc(rc));
+        if (rc != CASS_OK) {
+            elog("Prepare query error: ${desc}, query: ${query}",
+                ("desc", cass_error_desc(rc))("query", query));
+        }
         prepared->reset(cass_future_get_prepared(prepareFuture));
         return (rc == CASS_OK);
     };
@@ -475,14 +482,11 @@ future_guard CassandraClient::executeStatement(statement_guard&& gStatement)
 void CassandraClient::waitFuture(future_guard&& gFuture)
 {
     auto cassFuture = gFuture.get();
-    if(cass_future_error_code(cassFuture) == CASS_OK) {
-        //std::cout << "Success!" << std::endl;
-    } else {
+    if(cass_future_error_code(cassFuture) != CASS_OK) {
         const char* message;
         size_t message_length;
         cass_future_error_message(cassFuture, &message, &message_length);
-        fprintf(stderr, "Unable to run query: '%.*s'\n",
-            (int)message_length, message);
+        elog("Unable to run query: ${desc}", ("desc", std::string(message, message_length)));
         appbase::app().quit();
     }
 }
