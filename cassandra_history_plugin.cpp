@@ -18,9 +18,11 @@
 #include <boost/thread/thread.hpp>
 #include <boost/thread/mutex.hpp>
 
+#include <algorithm>
 #include <ctime>
 #include <deque>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <set>
 #include <type_traits>
@@ -85,27 +87,6 @@ class cassandra_history_plugin_impl {
    fc::optional<boost::signals2::scoped_connection> irreversible_block_connection;
    fc::optional<boost::signals2::scoped_connection> accepted_transaction_connection;
    fc::optional<boost::signals2::scoped_connection> applied_transaction_connection;
-
-   std::set<account_name> account_set( const chain::base_action_trace& act ) {
-      std::set<account_name> result;
-
-      result.insert( act.receipt.receiver );
-      for( const auto& a : act.act.authorization ) {
-         /*if( bypass_filter ||
-               filter_on.find({ act.receipt.receiver, 0, 0}) != filter_on.end() ||
-               filter_on.find({ act.receipt.receiver, 0, a.actor}) != filter_on.end() ||
-               filter_on.find({ act.receipt.receiver, act.act.name, 0}) != filter_on.end() ||
-               filter_on.find({ act.receipt.receiver, act.act.name, a.actor }) != filter_on.end() ) {
-            if ((filter_out.find({ act.receipt.receiver, 0, 0 }) == filter_out.end()) &&
-               (filter_out.find({ act.receipt.receiver, 0, a.actor }) == filter_out.end()) &&
-               (filter_out.find({ act.receipt.receiver, act.act.name, 0 }) == filter_out.end()) &&
-               (filter_out.find({ act.receipt.receiver, act.act.name, a.actor }) == filter_out.end())) {*/
-               result.insert( a.actor );
-            /*}
-         }*/
-      }
-      return result;
-   }
 
    void check_task_queue_size();
    void consume_blocks();
@@ -590,7 +571,9 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
                cas_client->insertActionTraceWithParent(global_seq_buffer, block_time, num_to_bytes(parent_seq));
             });
       }
-      auto aset = account_set(atrace);
+      std::set<account_name> aset = { at.receipt.receiver };
+      std::transform(std::begin(at.act.authorization), std::end(at.act.authorization),
+         std::inserter(aset, std::begin(aset)), [](auto& auth) { return auth.actor; });
       for (auto a : aset)
       {
          bool need_insert_shard = false;
@@ -712,6 +695,10 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
       if( options.count( "cassandra-url" )) {
          ilog( "initializing cassandra_history_plugin" );
 
+         if( options.at( "delete-all-blocks" ).as<bool>()) {
+            fc::remove_all( app().data_dir() / "cass_shard" );
+         }
+
          auto db_size = options.at("cassandra-shard-db-size-mb").as<size_t>();
          my->db.reset(new chainbase::database(app().data_dir() / "cass_shard", chain::database::read_write, db_size*1024*1024ll));
          my->db->add_index<account_action_trace_shard_multi_index>();
@@ -746,7 +733,6 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
             for( auto& s : fo ) {
                std::vector<std::string> v;
                boost::split( v, s, boost::is_any_of( ":" ));
-               std::cout << v[0] << v[1] << v[2] << std::endl;
                EOS_ASSERT( v.size() == 3, fc::invalid_arg_exception, "Invalid value ${s} for --cassandra-filter-out", ("s", s));
                filter_entry fe{v[0], v[1], v[2]};
                my->filter_out.insert( fe );
