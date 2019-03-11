@@ -115,6 +115,9 @@ class cassandra_history_plugin_impl {
 
    void init();
 
+   uint32_t start_block_num = 0;
+   std::atomic_bool start_block_reached{false};
+
    bool filter_on_star = true;
    std::set<filter_entry> filter_on;
    std::set<filter_entry> filter_out;
@@ -376,7 +379,14 @@ void cassandra_history_plugin_impl::queue( Queue& queue, const Entry& e ) {
 
 void cassandra_history_plugin_impl::on_accepted_block( const chain::block_state_ptr& bs ) {
    try {
-      queue( block_state_queue, bs );
+      if( !start_block_reached ) {
+         if( bs->block_num >= start_block_num ) {
+            start_block_reached = true;
+         }
+      }
+      if( start_block_reached ) {
+         queue( block_state_queue, bs );
+      }
    } catch (fc::exception& e) {
       elog("FC Exception while accepted_block ${e}", ("e", e.to_string()));
    } catch (std::exception& e) {
@@ -388,7 +398,9 @@ void cassandra_history_plugin_impl::on_accepted_block( const chain::block_state_
 
 void cassandra_history_plugin_impl::on_applied_irreversible_block( const chain::block_state_ptr& bs ) {
    try {
-      queue( irreversible_block_state_queue, bs );
+      if( start_block_reached ) {
+         queue( irreversible_block_state_queue, bs );
+      }
    } catch (fc::exception& e) {
       elog("FC Exception while applied_irreversible_block ${e}", ("e", e.to_string()));
    } catch (std::exception& e) {
@@ -400,7 +412,9 @@ void cassandra_history_plugin_impl::on_applied_irreversible_block( const chain::
 
 void cassandra_history_plugin_impl::on_accepted_transaction( const chain::transaction_metadata_ptr& t ) {
    try {
+      if( start_block_reached ) {
          queue( transaction_metadata_queue, t );
+      }
    } catch (fc::exception& e) {
       elog("FC Exception while accepted_transaction ${e}", ("e", e.to_string()));
    } catch (std::exception& e) {
@@ -417,7 +431,9 @@ void cassandra_history_plugin_impl::on_applied_transaction( const chain::transac
             t->receipt->status != chain::transaction_receipt_header::soft_fail) )
          return;
 
-      queue( transaction_trace_queue, t );
+      if( start_block_reached ) {
+         queue( transaction_trace_queue, t );
+      }
    } catch (fc::exception& e) {
       elog("FC Exception while applied_transaction ${e}", ("e", e.to_string()));
    } catch (std::exception& e) {
@@ -685,7 +701,9 @@ void cassandra_history_plugin::set_program_options(options_description&, options
          ("cassandra-url", bpo::value<std::string>(),
           "cassandra URL connection string If not specified then plugin is disabled.")
          ("cassandra-wipe", bpo::bool_switch()->default_value(false),
-         "Only used with --replay-blockchain, --hard-replay-blockchain, or --delete-all-blocks to wipe cassandra db.")
+          "Only used with --replay-blockchain, --hard-replay-blockchain, or --delete-all-blocks to wipe cassandra db.")
+         ("cassandra-block-start", bpo::value<uint32_t>()->default_value(0),
+          "If specified then nothing is pushed to cassandra until specified block is reached.")
          ("cassandra-filter-on", bpo::value<vector<string>>()->composing(),
           "Track actions which match receiver:action:actor. Receiver, Action, & Actor may be blank to include all. i.e. eosio:: or :transfer:  Use * or leave unspecified to include all.")
          ("cassandra-filter-out", bpo::value<vector<string>>()->composing(),
@@ -704,13 +722,12 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
       if( options.count( "cassandra-url" )) {
          ilog( "initializing cassandra_history_plugin" );
 
-         if( options.at( "delete-all-blocks" ).as<bool>()) {
-            fc::remove_all( app().data_dir() / "cass_shard" );
+         if( options.count( "cassandra-block-start" )) {
+            my->start_block_num = options.at( "cassandra-block-start" ).as<uint32_t>();
          }
-
-         auto db_size = options.at("cassandra-shard-db-size-mb").as<size_t>();
-         my->db.reset(new chainbase::database(app().data_dir() / "cass_shard", chain::database::read_write, db_size*1024*1024ll));
-         my->db->add_index<account_action_trace_shard_multi_index>();
+         if( my->start_block_num == 0 ) {
+            my->start_block_reached = true;
+         }
 
          if( options.count( "abi-serializer-max-time-ms" )) {
             uint32_t max_time = options.at( "abi-serializer-max-time-ms" ).as<uint32_t>();
@@ -757,8 +774,13 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
             if( options.at( "cassandra-wipe" ).as<bool>()) {
                ilog( "Wiping cassandra on startup" );
                my->cas_client->truncateTables();
+               fc::remove_all( app().data_dir() / "cass_shard" );
             }
          }
+
+         auto db_size = options.at("cassandra-shard-db-size-mb").as<size_t>();
+         my->db.reset(new chainbase::database(app().data_dir() / "cass_shard", chain::database::read_write, db_size*1024*1024ll));
+         my->db->add_index<account_action_trace_shard_multi_index>();
 
          if( options.count( "cassandra-queue-size" )) {
             my->max_queue_size = options.at( "cassandra-queue-size" ).as<uint32_t>();
