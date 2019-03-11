@@ -12,7 +12,6 @@
 #include <fc/variant.hpp>
 
 
-const std::string CassandraClient::history_keyspace                  = "eos_history_test";
 const std::string CassandraClient::account_table                     = "account";
 const std::string CassandraClient::account_public_key_table          = "account_public_key";
 const std::string CassandraClient::account_controlling_account_table = "account_controlling_account";
@@ -25,7 +24,7 @@ const std::string CassandraClient::transaction_table                 = "transact
 const std::string CassandraClient::transaction_trace_table           = "transaction_trace";
 
 
-CassandraClient::CassandraClient(const std::string& hostUrl)
+CassandraClient::CassandraClient(const std::string& hostUrl, const std::string& keyspace)
     : gCluster_(nullptr, cass_cluster_free),
     gSession_(nullptr, cass_session_free),
     gPreparedDeleteAccountPublicKeys_(nullptr, cass_prepared_free),
@@ -56,7 +55,7 @@ CassandraClient::CassandraClient(const std::string& hostUrl)
 
     session = cass_session_new();
     gSession_.reset(session);
-    connectFuture = cass_session_connect_keyspace(session, cluster, history_keyspace.c_str());
+    connectFuture = cass_session_connect_keyspace(session, cluster, keyspace.c_str());
     auto gFuture = future_guard(connectFuture, cass_future_free);
     err = cass_future_error_code(connectFuture);
 

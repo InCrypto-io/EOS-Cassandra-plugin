@@ -16,7 +16,7 @@
 class CassandraClient
 {
 public:
-    explicit CassandraClient(const std::string& hostUrl);
+    explicit CassandraClient(const std::string& hostUrl, const std::string& keyspace);
     ~CassandraClient();
 
     void prepareStatements();
@@ -97,7 +97,6 @@ public:
     static batch_guard createUnloggedBatch();
 
 
-    static const std::string history_keyspace;
     static const std::string account_table;
     static const std::string account_public_key_table;
     static const std::string account_controlling_account_table;

@@ -700,6 +700,8 @@ void cassandra_history_plugin::set_program_options(options_description&, options
    cfg.add_options()
          ("cassandra-url", bpo::value<std::string>(),
           "cassandra URL connection string If not specified then plugin is disabled.")
+         ("cassandra-keyspace", bpo::value<std::string>(),
+          "cassandra keyspace where data is located.")
          ("cassandra-wipe", bpo::bool_switch()->default_value(false),
           "Only used with --replay-blockchain, --hard-replay-blockchain, or --delete-all-blocks to wipe cassandra db.")
          ("cassandra-block-start", bpo::value<uint32_t>()->default_value(0),
@@ -719,7 +721,7 @@ void cassandra_history_plugin::set_program_options(options_description&, options
 
 void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
    try {
-      if( options.count( "cassandra-url" )) {
+      if( options.count( "cassandra-url" ) && options.count( "cassandra-keyspace" ) ) {
          ilog( "initializing cassandra_history_plugin" );
 
          if( options.count( "cassandra-block-start" )) {
@@ -766,7 +768,8 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
          }
          
          std::string url_str = options.at( "cassandra-url" ).as<std::string>();
-         my->cas_client.reset( new CassandraClient(url_str) );
+         std::string keyspace_str = options.at( "cassandra-keyspace" ).as<std::string>();
+         my->cas_client.reset( new CassandraClient(url_str, keyspace_str) );
 
          if(options.at( "replay-blockchain" ).as<bool>() ||
             options.at( "hard-replay-blockchain" ).as<bool>() ||
@@ -815,7 +818,7 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
 
          my->init();
       } else {
-         wlog( "eosio::cassandra_history_plugin configured, but no --cassandra-url specified." );
+         wlog( "eosio::cassandra_history_plugin configured, but no --cassandra-url or --cassandra-keyspace specified." );
          wlog( "cassandra_history_plugin disabled." );
       }
    }
