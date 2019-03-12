@@ -450,7 +450,7 @@ void cassandra_history_plugin_impl::process_accepted_block(chain::block_state_pt
       [ bs{std::move(bs)}, this ]()
       {
          auto block_num = bs->block_num;
-         if( block_num % 1000 == 0 )
+         if( block_num % 10000 == 0 )
          {
             ilog( "block_num: ${b}", ("b", block_num) );
          }
@@ -484,7 +484,7 @@ void cassandra_history_plugin_impl::process_accepted_transaction(chain::transact
    thread_pool->enqueue(
       [ t{std::move(t)}, this ]()
       {
-         const auto& trx = t->trx;
+         const chain::signed_transaction& trx = t->packed_trx->get_signed_transaction();
          if( !filter_include( trx ) ) return;
 
          const auto& trx_id = t->id;
