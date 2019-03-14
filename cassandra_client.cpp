@@ -63,6 +63,7 @@ CassandraClient::CassandraClient(const std::string& hostUrl, const std::string& 
     {
         ilog("Connected to Apache Cassandra");
         prepareStatements();
+        initLib();
     }
     else
     {
@@ -78,6 +79,14 @@ CassandraClient::~CassandraClient()
 {
 }
 
+
+void CassandraClient::initLib()
+{
+    auto statement = cass_statement_new(("INSERT INTO " + lib_table + " (part_key, block_num) VALUES(0, 0) IF NOT EXISTS;").c_str(), 0);
+    statement_guard gStatement(statement, cass_statement_free);
+    auto gInitLIBFuture = executeStatement(std::move(gStatement));
+    waitFuture(std::move(gInitLIBFuture));
+}
 
 void CassandraClient::prepareStatements()
 {

@@ -19,6 +19,7 @@ public:
     explicit CassandraClient(const std::string& hostUrl, const std::string& keyspace);
     ~CassandraClient();
 
+    void initLib();
     void prepareStatements();
 
     void insertAccount(
