@@ -344,7 +344,7 @@ void cassandra_history_plugin_impl::consume_blocks() {
             break;
          }
       }
-      ilog("elasticsearch_plugin consume thread shutdown gracefully");
+      ilog("cassandra_history_plugin consume thread shutdown gracefully");
    } catch (fc::exception& e) {
       elog("FC Exception while consuming block ${e}", ("e", e.to_string()));
    } catch (std::exception& e) {
