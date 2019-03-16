@@ -1,13 +1,17 @@
 #pragma once
 #include <atomic>
+#include <functional>
 #include <iostream>
 #include <mutex>
+#include <tuple>
 #include <vector>
 
 #include <cassandra.h>
+#include <eosio/cassandra_history_plugin/cassandra_types.hpp>
 #include <eosio/chain/action.hpp>
 #include <eosio/chain/block_timestamp.hpp>
 #include <eosio/chain/contract_types.hpp>
+#include <chainbase/chainbase.hpp>
 #include <fc/time.hpp>
 
 #include "cassandra_guard.h"
@@ -16,15 +20,19 @@
 class CassandraClient
 {
 public:
-    explicit CassandraClient(const std::string& hostUrl, const std::string& keyspace);
+    CassandraClient(const std::string& hostUrl, const std::string& keyspace);
     ~CassandraClient();
 
     void initLib();
+    void insertFailed();
     void prepareStatements();
+
+    void batchInsertActionTraceWithParent(
+        const std::vector<std::tuple<std::vector<cass_byte_t>, fc::time_point, std::vector<cass_byte_t>>>& data);
 
     void insertAccount(
         const eosio::chain::newaccount& newacc,
-        const eosio::chain::block_timestamp_type& blockTime);
+        fc::time_point blockTime);
     void deleteAccountAuth(
         const eosio::chain::deleteauth& del);
     void updateAccountAuth(
@@ -33,18 +41,18 @@ public:
         const eosio::chain::setabi& setabi);
     
     void insertAccountActionTrace(
-        const std::string& account,
+        const eosio::chain::account_name& account,
         int64_t shardId,
         std::vector<cass_byte_t> globalSeq,
         fc::time_point blockTime);
     void insertAccountActionTraceWithParent(
-        const std::string& account,
+        const eosio::chain::account_name& account,
         int64_t shardId,
         std::vector<cass_byte_t> globalSeq,
         fc::time_point blockTime,
         std::vector<cass_byte_t> parent);
     void insertAccountActionTraceShard(
-        const std::string& account,
+        const eosio::chain::account_name& account,
         int64_t shardId);
     void insertActionTrace(
         std::vector<cass_byte_t> globalSeq,
@@ -73,26 +81,23 @@ public:
 
 
     statement_guard createInsertAccountActionTraceStatement(
-        const std::string& account,
+        const eosio::chain::account_name& account,
         int64_t shardId,
         std::vector<cass_byte_t> globalSeq,
         fc::time_point blockTime) const;
     statement_guard createInsertAccountActionTraceWithParentStatement(
-        const std::string& account,
+        const eosio::chain::account_name& account,
         int64_t shardId,
         std::vector<cass_byte_t> globalSeq,
         fc::time_point blockTime,
         std::vector<cass_byte_t> parent) const;
     statement_guard createInsertAccountActionTraceShardStatement(
-        const std::string& account,
+        const eosio::chain::account_name& account,
         int64_t shardId) const;
-    statement_guard createInsertActionTraceWithParentStatement(
-        std::vector<cass_byte_t> globalSeq,
-        fc::time_point blockTime,
-        std::vector<cass_byte_t> parent) const;
 
     future_guard executeBatch(batch_guard&& b);
     void waitFuture(future_guard&& gFuture);
+    void waitFuture(future_guard&& gFuture, const std::function<void()>& onError);
 
     static batch_guard createLoggedBatch();
     static batch_guard createUnloggedBatch();
@@ -114,6 +119,9 @@ private:
     CassandraClient& operator=(const CassandraClient& other) = delete;
 
     future_guard executeStatement(statement_guard&& gStatement);
+
+    chainbase::database failed;
+    int count = 0;
 
     cluster_guard gCluster_;
     session_guard gSession_;

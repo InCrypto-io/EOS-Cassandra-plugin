@@ -25,6 +25,7 @@
 #include <iterator>
 #include <memory>
 #include <set>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 
@@ -508,7 +509,7 @@ void cassandra_history_plugin_impl::process_accepted_transaction(chain::transact
    thread_pool->enqueue(
       [ t{std::move(t)}, this ]()
       {
-         const chain::signed_transaction& trx = t->packed_trx->get_signed_transaction();
+         const chain::signed_transaction& trx = t->packed_trx.get_signed_transaction();
          if( !filter_include( trx ) ) return;
 
          const auto& trx_id = t->id;
@@ -596,10 +597,11 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
    auto& chain = chain_plug->chain();
    const auto& idx = db->get_index<account_action_trace_shard_multi_index, by_account>();
 
-   batch_guard tracesBatch(nullptr, cass_batch_free);
+   std::vector<std::tuple<std::vector<cass_byte_t>, fc::time_point, std::vector<cass_byte_t>>> batchActionTraceWithParent;
+   //batch_guard tracesBatch(nullptr, cass_batch_free);
    batch_guard accountTracesBatch(nullptr, cass_batch_free);
    try {
-      tracesBatch = cas_client->createUnloggedBatch();
+      //tracesBatch = cas_client->createUnloggedBatch();
       accountTracesBatch = cas_client->createLoggedBatch();
    } catch (const std::exception& e) {
       elog("STD Exception while creating batch ${e}", ("e", e.what()));
@@ -635,8 +637,9 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
       }
       else {
          try {
-            auto stmt = cas_client->createInsertActionTraceWithParentStatement(global_seq_buffer, block_time, num_to_bytes(parent_seq));
-            cass_batch_add_statement(tracesBatch.get(), stmt.get());
+            batchActionTraceWithParent.emplace_back(std::make_tuple(global_seq_buffer, block_time, num_to_bytes(parent_seq)));
+            //auto stmt = cas_client->createInsertActionTraceWithParentStatement(global_seq_buffer, block_time, num_to_bytes(parent_seq));
+            //cass_batch_add_statement(tracesBatch.get(), stmt.get());
          } catch (const std::exception& e) {
             elog("STD Exception from createInsertActionTraceWithParentStatement ${e}", ("e", e.what()));
             appbase::app().quit();
@@ -679,18 +682,17 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
             });
             shardId = itr->timestamp;
          }
-         auto name = std::string(a);
          try {
             if (need_insert_shard) {
-               auto stmt = cas_client->createInsertAccountActionTraceShardStatement(name, shardId);
+               auto stmt = cas_client->createInsertAccountActionTraceShardStatement(a, shardId);
                cass_batch_add_statement(accountTracesBatch.get(), stmt.get());
             }
             if (parent_seq == 0) {
-               auto stmt = cas_client->createInsertAccountActionTraceStatement(name, shardId, global_seq_buffer, block_time);
+               auto stmt = cas_client->createInsertAccountActionTraceStatement(a, shardId, global_seq_buffer, block_time);
                cass_batch_add_statement(accountTracesBatch.get(), stmt.get());
             }
             else {
-               auto stmt = cas_client->createInsertAccountActionTraceWithParentStatement(name, shardId, global_seq_buffer, block_time, num_to_bytes(parent_seq));
+               auto stmt = cas_client->createInsertAccountActionTraceWithParentStatement(a, shardId, global_seq_buffer, block_time, num_to_bytes(parent_seq));
                cass_batch_add_statement(accountTracesBatch.get(), stmt.get());
             }
          } catch (const std::exception& e) {
@@ -705,9 +707,10 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
 
    check_task_queue_size();
    thread_pool->enqueue(
-      [ t{std::move(t)}, block_time, rawTracesBatch{tracesBatch.get()}, rawaccountTracesBatch{accountTracesBatch.get()}, inserts{std::move(inserts)}, this ]()
+      [ t{std::move(t)}, block_time, batchActionTraceWithParent{std::move(batchActionTraceWithParent)},
+         /*rawTracesBatch{tracesBatch.get()}, */rawaccountTracesBatch{accountTracesBatch.get()}, inserts{std::move(inserts)}, this ]()
       {
-         batch_guard tracesBatch(rawTracesBatch, cass_batch_free);
+         //batch_guard tracesBatch(rawTracesBatch, cass_batch_free);
          batch_guard accountTracesBatch(rawaccountTracesBatch, cass_batch_free);
          const auto trx_id = t->id;
          const auto trx_id_str = trx_id.str();
@@ -724,9 +727,11 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
             appbase::app().quit();
          }
 
+//std::cout << "\n\n\n1\n\n" << std::endl;
          try {
-            auto f = cas_client->executeBatch(std::move(tracesBatch));
-            cas_client->waitFuture(std::move(f));
+            //auto f = cas_client->executeBatch(std::move(tracesBatch));
+            //cas_client->waitFuture(std::move(f));
+            cas_client->batchInsertActionTraceWithParent(batchActionTraceWithParent);
          } catch (const std::exception& e) {
             elog("STD Exception while executing batch with action traces ${e}", ("e", e.what()));
             appbase::app().quit();
@@ -734,10 +739,12 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
             elog("Unknown exception while executing batch with action traces");
             appbase::app().quit();
          }
+//std::cout << "\n\n\n2\n\n" << std::endl;
          for (auto& f : inserts)
          {
             f();
          }
+//std::cout << "\n\n\n3\n\n" << std::endl;
          try {
             auto f = cas_client->executeBatch(std::move(accountTracesBatch));
             cas_client->waitFuture(std::move(f));
@@ -748,9 +755,10 @@ void cassandra_history_plugin_impl::process_applied_transaction(chain::transacti
             elog("Unknown exception while executing batch with account action traces");
             appbase::app().quit();
          }
+//std::cout << "\n\n\n4\n\n" << std::endl;
       });
-   tracesBatch.drop();
-   accountTracesBatch.drop();
+   //tracesBatch.drop();        //passed underlying pointers to lambda where they will be released
+   accountTracesBatch.drop(); //so we can free at this point
 }
 
 void cassandra_history_plugin_impl::upsertAccount(
@@ -763,7 +771,7 @@ void cassandra_history_plugin_impl::upsertAccount(
    try {
       if( act.name == chain::newaccount::get_name() ) {
          auto newacc = act.data_as<chain::newaccount>();
-         cas_client->insertAccount(newacc, block_time);
+         cas_client->insertAccount(newacc, block_time.to_time_point());
       }
       else if( act.name == chain::updateauth::get_name() ) {
          const auto update = act.data_as<chain::updateauth>();
@@ -862,10 +870,18 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
                my->filter_out.insert( fe );
             }
          }
+
+         if(options.at( "replay-blockchain" ).as<bool>() ||
+            options.at( "hard-replay-blockchain" ).as<bool>() ||
+            options.at( "delete-all-blocks" ).as<bool>())
+         {
+            fc::remove_all( app().data_dir() / "cass_failed" );
+         }
          
          std::string url_str = options.at( "cassandra-url" ).as<std::string>();
          std::string keyspace_str = options.at( "cassandra-keyspace" ).as<std::string>();
          my->cas_client.reset( new CassandraClient(url_str, keyspace_str) );
+         my->cas_client->insertFailed();
 
          if(options.at( "replay-blockchain" ).as<bool>() ||
             options.at( "hard-replay-blockchain" ).as<bool>() ||
@@ -913,6 +929,7 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
             } ));
 
          my->init();
+         //appbase::app().quit();
       } else {
          wlog( "eosio::cassandra_history_plugin configured, but no --cassandra-url or --cassandra-keyspace specified." );
          wlog( "cassandra_history_plugin disabled." );
