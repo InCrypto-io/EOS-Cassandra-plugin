@@ -509,7 +509,7 @@ void cassandra_history_plugin_impl::process_accepted_transaction(chain::transact
    thread_pool->enqueue(
       [ t{std::move(t)}, this ]()
       {
-         const chain::signed_transaction& trx = t->packed_trx.get_signed_transaction();
+         const chain::signed_transaction& trx = t->packed_trx->get_signed_transaction();
          if( !filter_include( trx ) ) return;
 
          const auto& trx_id = t->id;
