@@ -29,6 +29,8 @@ public:
 
     void batchInsertActionTraceWithParent(
         const std::vector<std::tuple<std::vector<cass_byte_t>, fc::time_point, std::vector<cass_byte_t>>>& data);
+    void batchInsertAccountActionTrace(
+        const std::vector<std::tuple<eosio::chain::account_name, int64_t, std::vector<cass_byte_t>, fc::time_point, std::vector<cass_byte_t>>>& data);
 
     void insertAccount(
         const eosio::chain::newaccount& newacc,
@@ -80,27 +82,9 @@ public:
     void truncateTables();
 
 
-    statement_guard createInsertAccountActionTraceStatement(
-        const eosio::chain::account_name& account,
-        int64_t shardId,
-        std::vector<cass_byte_t> globalSeq,
-        fc::time_point blockTime) const;
-    statement_guard createInsertAccountActionTraceWithParentStatement(
-        const eosio::chain::account_name& account,
-        int64_t shardId,
-        std::vector<cass_byte_t> globalSeq,
-        fc::time_point blockTime,
-        std::vector<cass_byte_t> parent) const;
-    statement_guard createInsertAccountActionTraceShardStatement(
-        const eosio::chain::account_name& account,
-        int64_t shardId) const;
-
     future_guard executeBatch(batch_guard&& b);
     void waitFuture(future_guard&& gFuture);
     void waitFuture(future_guard&& gFuture, const std::function<void()>& onError);
-
-    static batch_guard createLoggedBatch();
-    static batch_guard createUnloggedBatch();
 
 
     static const std::string account_table;
