@@ -151,7 +151,7 @@ void CassandraClient::insertFailed()
     }
     for (auto it = std::begin(insertActionTraceIdx); it != std::end(insertActionTraceIdx); it++)
     {
-        std::cout << "insertActionTraceIdx:" << std::endl;
+        //std::cout << "insertActionTraceIdx:" << std::endl;
         if (!it->actionTrace.empty())
         {
             std::cout << "Insert full action" << std::endl;
@@ -160,11 +160,11 @@ void CassandraClient::insertFailed()
             // s.resize(it->actionTrace.size());
             // std::copy(it->actionTrace.begin(), it->actionTrace.end()/* + it->actionTrace.size()*/, s.begin());
             s = it->actionTrace.data();
-            std::cout << s << std::endl;
+            //std::cout << s << std::endl;
         }
         else
         {
-            std::cout << "Insert action with parent" << std::endl;
+            //std::cout << "Insert action with parent" << std::endl;
             cAcTraceWP++;
         }
         std::vector<cass_byte_t> gs;
@@ -179,19 +179,19 @@ void CassandraClient::insertFailed()
         {
             parent[i] = it->parent[i];
         }
-        std::cout << "Block time: " << fc::string(it->blockTime) << std::endl;
-        std::cout << "Global seq" << std::endl;
+        //std::cout << "Block time: " << fc::string(it->blockTime) << std::endl;
+        //std::cout << "Global seq" << std::endl;
         for (auto& b : gs)
         {
-            std::cout << (int)b;
+            //std::cout << (int)b;
         }
-        std::cout << std::endl;
-        std::cout << "Parent" << std::endl;
+        //std::cout << std::endl;
+        //std::cout << "Parent" << std::endl;
         for (auto& b : parent)
         {
-            std::cout << (int)b;
+            //std::cout << (int)b;
         }
-        std::cout << std::endl;
+        //std::cout << std::endl;
     }
     std::cout << "cAcc C: " << cAcc << std::endl;
     std::cout << "cAccAcTrace C: " << cAccAcTrace << std::endl;
@@ -216,6 +216,28 @@ void CassandraClient::insertFailed()
         failed.remove(*insertActionTraceIdx.begin());
     }
     std::cout << "insertActionTraceIdx deleted" << std::endl;
+
+    /*std::string actionTrace("qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq");
+    failed.create<eosio::insert_action_trace_object>([&]( auto& obj ) {
+        obj.setGlobalSeq({0});
+        obj.actionTrace.resize(actionTrace.size());
+        std::copy(actionTrace.begin(), actionTrace.end(),
+            obj.actionTrace.begin());
+    });
+    actionTrace = "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww";
+    failed.create<eosio::insert_action_trace_object>([&]( auto& obj ) {
+        obj.setGlobalSeq({1});
+        obj.actionTrace.resize(actionTrace.size());
+        std::copy(actionTrace.begin(), actionTrace.end(),
+            obj.actionTrace.begin());
+    });
+    actionTrace = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    failed.create<eosio::insert_action_trace_object>([&]( auto& obj ) {
+        obj.setGlobalSeq({2});
+        obj.actionTrace.resize(actionTrace.size());
+        std::copy(actionTrace.begin(), actionTrace.end(),
+            obj.actionTrace.begin());
+    });*/
 }
 
 void CassandraClient::prepareStatements()
