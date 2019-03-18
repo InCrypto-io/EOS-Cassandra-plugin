@@ -1,5 +1,7 @@
 #pragma once
+#include <algorithm>
 #include <functional>
+#include <vector>
 
 #include <cassandra.h>
 #include <chainbase/chainbase.hpp>
@@ -41,6 +43,23 @@ namespace eosio
         chain::shared_blob globalSeq;
         fc::time_point blockTime;
         chain::shared_blob parent;
+        
+        void setGlobalSeq(const std::vector<cass_byte_t>& gs)
+        {
+            globalSeq.resize( gs.size() );
+            for (int i = 0; i < gs.size(); i++)
+            {
+                globalSeq[i] = gs[i];
+            }
+        }
+        void setParent(const std::vector<cass_byte_t>& p)
+        {
+            parent.resize( p.size() );
+            for (int i = 0; i < p.size(); i++)
+            {
+                parent[i] = p[i];
+            }
+        }
     };
     class insert_account_action_trace_shard_object : public chainbase::object<cass_query_object_type::insert_account_action_trace_shard, insert_account_action_trace_shard_object> {
         OBJECT_CTOR(insert_account_action_trace_shard_object)
@@ -57,6 +76,23 @@ namespace eosio
         fc::time_point blockTime;
         chain::shared_blob actionTrace;
         chain::shared_blob parent;
+
+        void setGlobalSeq(const std::vector<cass_byte_t>& gs)
+        {
+            globalSeq.resize( gs.size() );
+            for (int i = 0; i < gs.size(); i++)
+            {
+                globalSeq[i] = gs[i];
+            }
+        }
+        void setParent(const std::vector<cass_byte_t>& p)
+        {
+            parent.resize( p.size() );
+            for (int i = 0; i < p.size(); i++)
+            {
+                parent[i] = p[i];
+            }
+        }
     };
 
 

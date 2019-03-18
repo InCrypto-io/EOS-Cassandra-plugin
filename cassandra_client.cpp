@@ -84,7 +84,11 @@ CassandraClient::CassandraClient(const std::string& hostUrl, const std::string& 
 
 CassandraClient::~CassandraClient()
 {
-    std::cout << "Count: " << count << std::endl;
+    std::cout << "countAcc: " << countAcc << std::endl;
+    std::cout << "countAccAcTrace: " << countAccAcTrace << std::endl;
+    std::cout << "countAccAcTraceShard: " << countAccAcTraceShard << std::endl;
+    std::cout << "countAcTrace: " << countAcTrace << std::endl;
+    std::cout << "countAcTraceWP: " << countAcTraceWP << std::endl;
 }
 
 
@@ -102,10 +106,14 @@ void CassandraClient::insertFailed()
     const auto& insertAccountActionTraceIdx = failed.get_index<eosio::insert_account_action_trace_multi_index, eosio::by_account_shard_id>();
     const auto& insertAccountActionTraceShardIdx = failed.get_index<eosio::insert_account_action_trace_shard_multi_index, eosio::by_account_shard_id>();
     const auto& insertActionTraceIdx = failed.get_index<eosio::insert_action_trace_multi_index, eosio::by_id>();
-    int c = 0;
+    int cAcc = 0;
+    int cAccAcTrace = 0;
+    int cAccAcTraceShard = 0;
+    int cAcTrace = 0;
+    int cAcTraceWP = 0;
     for (auto it = std::begin(accountUpsertsIdx); it != std::end(accountUpsertsIdx); it++)
     {
-        c++;
+        cAcc++;
         std::cout << "Action names:" << std::endl;
         std::cout << it->name << std::endl;
         if( it->name == eosio::chain::newaccount::get_name() ) {
@@ -131,46 +139,67 @@ void CassandraClient::insertFailed()
     }
     for (auto it = std::begin(insertAccountActionTraceIdx); it != std::end(insertAccountActionTraceIdx); it++)
     {
-        c++;
+        cAccAcTrace++;
         std::cout << "insertAccountActionTraceIdx:" << std::endl;
         std::cout << it->account << "\t" << it->shardId << std::endl;
     }
     for (auto it = std::begin(insertAccountActionTraceShardIdx); it != std::end(insertAccountActionTraceShardIdx); it++)
     {
-        c++;
+        cAccAcTraceShard++;
         std::cout << "insertAccountActionTraceShardIdx:" << std::endl;
         std::cout << it->account << "\t" << it->shardId << std::endl;
     }
     for (auto it = std::begin(insertActionTraceIdx); it != std::end(insertActionTraceIdx); it++)
     {
-        c++;
         std::cout << "insertActionTraceIdx:" << std::endl;
-        std::cout << fc::string(it->blockTime) << std::endl;
         if (!it->actionTrace.empty())
         {
             std::cout << "Insert full action" << std::endl;
+            cAcTrace++;
+            std::string s;
+            // s.resize(it->actionTrace.size());
+            // std::copy(it->actionTrace.begin(), it->actionTrace.end()/* + it->actionTrace.size()*/, s.begin());
+            s = it->actionTrace.data();
+            std::cout << s << std::endl;
         }
         else
         {
             std::cout << "Insert action with parent" << std::endl;
+            cAcTraceWP++;
         }
+        std::vector<cass_byte_t> gs;
+        std::vector<cass_byte_t> parent;
+        gs.resize( it->globalSeq.size() );
+        for (int i = 0; i < it->globalSeq.size(); i++)
+        {
+            gs[i] = it->globalSeq[i];
+        }
+        parent.resize( it->parent.size() );
+        for (int i = 0; i < it->parent.size(); i++)
+        {
+            parent[i] = it->parent[i];
+        }
+        std::cout << "Block time: " << fc::string(it->blockTime) << std::endl;
+        std::cout << "Global seq" << std::endl;
+        for (auto& b : gs)
+        {
+            std::cout << (int)b;
+        }
+        std::cout << std::endl;
+        std::cout << "Parent" << std::endl;
+        for (auto& b : parent)
+        {
+            std::cout << (int)b;
+        }
+        std::cout << std::endl;
     }
-    std::cout << "Count C: " << c << std::endl;
+    std::cout << "cAcc C: " << cAcc << std::endl;
+    std::cout << "cAccAcTrace C: " << cAccAcTrace << std::endl;
+    std::cout << "cAccAcTraceShard C: " << cAccAcTraceShard << std::endl;
+    std::cout << "cAcTrace C: " << cAcTrace << std::endl;
+    std::cout << "cAcTraceWP C: " << cAcTraceWP << std::endl;
     std::cout << "Free memory: " << failed.get_free_memory() << std::endl; //4294965120
 
-    // fc::mutable_variant_object var;
-    // var("newacc", failed.get_free_memory());
-    // var("blockTime", failed.get_free_memory());
-    // failed.create<eosio::upsert_account_object>([&]( auto& obj ) {
-    //     obj.name = eosio::chain::newaccount::get_name();
-    //     obj.data = var;
-    // });
-
-    /*auto& _idx = failed.get_mutable_index<eosio::upsert_account_multi_index>();
-    const auto& dedupe_index = _idx.indices().get<eosio::by_id>();
-    while(!dedupe_index.empty()) {
-        _idx.remove(*dedupe_index.begin());
-    }*/
     while(!accountUpsertsIdx.empty()) {
         failed.remove(*accountUpsertsIdx.begin());
     }
@@ -292,22 +321,19 @@ void CassandraClient::batchInsertActionTraceWithParent(
     {
         if (errorHandled) return;
 
+        std::lock_guard<std::mutex> lock(db_mtx);
         for (const auto& val : data)
         {
             std::vector<cass_byte_t> globalSeq;
             fc::time_point blockTime;
             std::vector<cass_byte_t> parent;
             std::tie(globalSeq, blockTime, parent) = val;
-            count++;
+            countAcTraceWP++;
 
             failed.create<eosio::insert_action_trace_object>([&]( auto& obj ) {
-                obj.globalSeq.resize( fc::raw::pack_size( globalSeq ) );
-                fc::datastream<char*> ds1( obj.globalSeq.data(), obj.globalSeq.size() );
-                fc::raw::pack( ds1, globalSeq );
+                obj.setGlobalSeq(globalSeq);
                 obj.blockTime = blockTime;
-                obj.parent.resize( fc::raw::pack_size( parent ) );
-                fc::datastream<char*> ds2( obj.parent.data(), obj.parent.size() );
-                fc::raw::pack( ds2, parent );
+                obj.setParent(parent);
             });
         }
         errorHandled = true; //needs to be set so only one object will be written to db even if multiple waitFuture fail
@@ -379,7 +405,8 @@ void CassandraClient::insertAccount(
     auto f = [this, &newacc, &blockTime, &errorHandled]()
     {
         if (errorHandled) return;
-        count++;
+        std::lock_guard<std::mutex> lock(db_mtx);
+        countAcc++;
 
         failed.create<eosio::upsert_account_object>([&]( auto& obj ) {
             obj.name = eosio::chain::newaccount::get_name();
@@ -417,7 +444,8 @@ void CassandraClient::deleteAccountAuth(
     auto f = [this, &del, &errorHandled]()
     {
         if (errorHandled) return;
-        count++;
+        std::lock_guard<std::mutex> lock(db_mtx);
+        countAcc++;
 
         failed.create<eosio::upsert_account_object>([&]( auto& obj ) {
             obj.name = eosio::chain::deleteauth::get_name();
@@ -482,7 +510,8 @@ void CassandraClient::updateAccountAuth(
     auto f = [this, &update, &errorHandled]()
     {
         if (errorHandled) return;
-        count++;
+        std::lock_guard<std::mutex> lock(db_mtx);
+        countAcc++;
 
         failed.create<eosio::upsert_account_object>([&]( auto& obj ) {
             obj.name = eosio::chain::updateauth::get_name();
@@ -511,7 +540,8 @@ void CassandraClient::updateAccountAbi(
     auto f = [this, &setabi, &errorHandled]()
     {
         if (errorHandled) return;
-        count++;
+        std::lock_guard<std::mutex> lock(db_mtx);
+        countAcc++;
 
         failed.create<eosio::upsert_account_object>([&]( auto& obj ) {
             obj.name = eosio::chain::setabi::get_name();
@@ -543,14 +573,13 @@ void CassandraClient::insertAccountActionTrace(
     auto f = [&, this]()
     {
         if (errorHandled) return;
-        count++;
+        std::lock_guard<std::mutex> lock(db_mtx);
+        countAccAcTrace++;
 
         failed.create<eosio::insert_account_action_trace_object>([&]( auto& obj ) {
             obj.account = account;
             obj.shardId = shardId;
-            obj.globalSeq.resize( fc::raw::pack_size( globalSeq ) );
-            fc::datastream<char*> ds( obj.globalSeq.data(), obj.globalSeq.size() );
-            fc::raw::pack( ds, globalSeq );
+            obj.setGlobalSeq(globalSeq);
             obj.blockTime = blockTime;
         });
         errorHandled = true; //needs to be set so only one object will be written to db even if multiple waitFuture fail
@@ -579,18 +608,15 @@ void CassandraClient::insertAccountActionTraceWithParent(
     auto f = [&, this]()
     {
         if (errorHandled) return;
-        count++;
+        std::lock_guard<std::mutex> lock(db_mtx);
+        countAccAcTrace++;
 
         failed.create<eosio::insert_account_action_trace_object>([&]( auto& obj ) {
             obj.account = account;
             obj.shardId = shardId;
-            obj.globalSeq.resize( fc::raw::pack_size( globalSeq ) );
-            fc::datastream<char*> ds1( obj.globalSeq.data(), obj.globalSeq.size() );
-            fc::raw::pack( ds1, globalSeq );
+            obj.setGlobalSeq(globalSeq);
             obj.blockTime = blockTime;
-            obj.parent.resize( fc::raw::pack_size( parent ) );
-            fc::datastream<char*> ds2( obj.parent.data(), obj.parent.size() );
-            fc::raw::pack( ds2, parent );
+            obj.setParent(parent);
         });
         errorHandled = true; //needs to be set so only one object will be written to db even if multiple waitFuture fail
     };
@@ -611,7 +637,8 @@ void CassandraClient::insertAccountActionTraceShard(
     auto f = [&, this]()
     {
         if (errorHandled) return;
-        count++;
+        std::lock_guard<std::mutex> lock(db_mtx);
+        countAccAcTraceShard++;
 
         failed.create<eosio::insert_account_action_trace_shard_object>([&]( auto& obj ) {
             obj.account = account;
@@ -640,20 +667,26 @@ void CassandraClient::insertActionTrace(
     bool errorHandled = false;
     auto f = [&, this]()
     {
-        // if (errorHandled) return;
-        // count++;
+        if (errorHandled) return;
+        std::lock_guard<std::mutex> lock(db_mtx);
+        countAcTrace++;
 
-        //TODO: fix segfault here
-        // failed.create<eosio::insert_action_trace_object>([&]( auto& obj ) {
-        //     obj.globalSeq.resize( fc::raw::pack_size( globalSeq ) );
-        //     fc::datastream<char*> ds1( obj.globalSeq.data(), obj.globalSeq.size() );
-        //     fc::raw::pack( ds1, globalSeq );
-        //     obj.blockTime = blockTime;
-        //     obj.actionTrace.resize( fc::raw::pack_size( actionTrace ) );
-        //     fc::datastream<char*> ds2( obj.actionTrace.data(), obj.actionTrace.size() );
-        //     fc::raw::pack( ds2, actionTrace );
-        // });
-        // errorHandled = true; //needs to be set so only one object will be written to db even if multiple waitFuture fail
+        std::cout << "Block time: " << fc::string(blockTime) << std::endl;
+        std::cout << "Global seq" << std::endl;
+        for (auto& b : globalSeq)
+        {
+            std::cout << (int)b;
+        }
+        std::cout << std::endl;
+
+        failed.create<eosio::insert_action_trace_object>([&]( auto& obj ) {
+            obj.setGlobalSeq(globalSeq);
+            obj.blockTime = blockTime;
+            obj.actionTrace.resize(actionTrace.size());
+            std::copy(actionTrace.begin(), actionTrace.end(),
+                obj.actionTrace.begin());
+        });
+        errorHandled = true; //needs to be set so only one object will be written to db even if multiple waitFuture fail
     };
     waitFuture(std::move(gFuture), f);
 }
@@ -677,16 +710,13 @@ void CassandraClient::insertActionTraceWithParent(
     auto f = [&, this]()
     {
         if (errorHandled) return;
-        count++;
+        std::lock_guard<std::mutex> lock(db_mtx);
+        countAcTraceWP++;
 
         failed.create<eosio::insert_action_trace_object>([&]( auto& obj ) {
-            obj.globalSeq.resize( fc::raw::pack_size( globalSeq ) );
-            fc::datastream<char*> ds1( obj.globalSeq.data(), obj.globalSeq.size() );
-            fc::raw::pack( ds1, globalSeq );
+            obj.setGlobalSeq(globalSeq);
             obj.blockTime = blockTime;
-            obj.parent.resize( fc::raw::pack_size( parent ) );
-            fc::datastream<char*> ds2( obj.parent.data(), obj.parent.size() );
-            fc::raw::pack( ds2, parent );
+            obj.setParent(parent);
         });
         errorHandled = true; //needs to be set so only one object will be written to db even if multiple waitFuture fail
     };

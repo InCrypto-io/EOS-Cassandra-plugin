@@ -121,7 +121,12 @@ private:
     future_guard executeStatement(statement_guard&& gStatement);
 
     chainbase::database failed;
-    int count = 0;
+    std::mutex db_mtx;
+    int countAcc = 0;
+    int countAccAcTrace = 0;
+    int countAccAcTraceShard = 0;
+    int countAcTrace = 0;
+    int countAcTraceWP = 0;
 
     cluster_guard gCluster_;
     session_guard gSession_;
