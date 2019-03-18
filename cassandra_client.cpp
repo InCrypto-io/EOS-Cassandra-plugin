@@ -50,6 +50,9 @@ CassandraClient::CassandraClient(const std::string& hostUrl, const std::string& 
     failed.add_index<eosio::insert_account_action_trace_multi_index>();
     failed.add_index<eosio::insert_account_action_trace_shard_multi_index>();
     failed.add_index<eosio::insert_action_trace_multi_index>();
+    failed.add_index<eosio::insert_block_multi_index>();
+    failed.add_index<eosio::insert_transaction_multi_index>();
+    failed.add_index<eosio::insert_transaction_trace_multi_index>();
     
     CassCluster* cluster;
     CassSession* session;
@@ -89,6 +92,9 @@ CassandraClient::~CassandraClient()
     std::cout << "countAccAcTraceShard: " << countAccAcTraceShard << std::endl;
     std::cout << "countAcTrace: " << countAcTrace << std::endl;
     std::cout << "countAcTraceWP: " << countAcTraceWP << std::endl;
+    std::cout << "countBlock: " << countBlock << std::endl;
+    std::cout << "countTransaction: " << countTransaction << std::endl;
+    std::cout << "countTransactionTrace: " << countTransactionTrace << std::endl;
 }
 
 
@@ -106,14 +112,23 @@ void CassandraClient::insertFailed()
     const auto& insertAccountActionTraceIdx = failed.get_index<eosio::insert_account_action_trace_multi_index, eosio::by_account_shard_id>();
     const auto& insertAccountActionTraceShardIdx = failed.get_index<eosio::insert_account_action_trace_shard_multi_index, eosio::by_account_shard_id>();
     const auto& insertActionTraceIdx = failed.get_index<eosio::insert_action_trace_multi_index, eosio::by_id>();
+    const auto& insertBlockIdx = failed.get_index<eosio::insert_block_multi_index, eosio::by_id>();
+    const auto& insertTransactionIdx = failed.get_index<eosio::insert_transaction_multi_index, eosio::by_id>();
+    const auto& insertTransactionTraceIdx = failed.get_index<eosio::insert_transaction_trace_multi_index, eosio::by_id>();
     std::vector<eosio::upsert_account_object> accUpserts;
     std::vector<eosio::insert_account_action_trace_object> accActionTraces;
     std::vector<eosio::insert_account_action_trace_shard_object> accActionTraceShards;
     std::vector<eosio::insert_action_trace_object> actionTraces;
+    std::vector<eosio::insert_block_object> blocks;
+    std::vector<eosio::insert_transaction_object> transactions;
+    std::vector<eosio::insert_transaction_trace_object> transactionTraces;
     int cAcc = 0;
     int cAccAcTrace = 0;
     int cAccAcTraceShard = 0;
     int cAcTrace = 0;
+    int cBlock = 0;
+    int cTx = 0;
+    int cTxTrace = 0;
     for (auto it = std::begin(accountUpsertsIdx); it != std::end(accountUpsertsIdx); it++)
     {
         cAcc++;
@@ -134,28 +149,51 @@ void CassandraClient::insertFailed()
         cAcTrace++;
         actionTraces.push_back(*it);
     }
+    for (auto it = std::begin(insertBlockIdx); it != std::end(insertBlockIdx); it++)
+    {
+        cBlock++;
+        blocks.push_back(*it);
+    }
+    for (auto it = std::begin(insertTransactionIdx); it != std::end(insertTransactionIdx); it++)
+    {
+        cTx++;
+        transactions.push_back(*it);
+    }
+    for (auto it = std::begin(insertTransactionTraceIdx); it != std::end(insertTransactionTraceIdx); it++)
+    {
+        cTxTrace++;
+        transactionTraces.push_back(*it);
+    }
     std::cout << "cAcc C: " << cAcc << std::endl;
     std::cout << "cAccAcTrace C: " << cAccAcTrace << std::endl;
     std::cout << "cAccAcTraceShard C: " << cAccAcTraceShard << std::endl;
     std::cout << "cAcTrace C: " << cAcTrace << std::endl;
+    std::cout << "cBlock C: " << cBlock << std::endl;
+    std::cout << "cTx C: " << cTx << std::endl;
+    std::cout << "cTxTrace C: " << cTxTrace << std::endl;
     std::cout << "Free memory: " << failed.get_free_memory() << std::endl; //4294965120
 
     while(!accountUpsertsIdx.empty()) {
         failed.remove(*accountUpsertsIdx.begin());
     }
-    std::cout << "accountUpsertsIdx deleted" << std::endl;
     while(!insertAccountActionTraceIdx.empty()) {
         failed.remove(*insertAccountActionTraceIdx.begin());
     }
-    std::cout << "insertAccountActionTraceIdx deleted" << std::endl;
     while(!insertAccountActionTraceShardIdx.empty()) {
         failed.remove(*insertAccountActionTraceShardIdx.begin());
     }
-    std::cout << "insertAccountActionTraceShardIdx deleted" << std::endl;
     while(!insertActionTraceIdx.empty()) {
         failed.remove(*insertActionTraceIdx.begin());
     }
-    std::cout << "insertActionTraceIdx deleted" << std::endl;
+    while(!insertBlockIdx.empty()) {
+        failed.remove(*insertBlockIdx.begin());
+    }
+    while(!insertTransactionIdx.empty()) {
+        failed.remove(*insertTransactionIdx.begin());
+    }
+    while(!insertTransactionTraceIdx.empty()) {
+        failed.remove(*insertTransactionTraceIdx.begin());
+    }
 
     for (const auto& obj : accUpserts)
     {
@@ -244,6 +282,38 @@ void CassandraClient::insertFailed()
         {
             insertActionTraceWithParent(globalSeq, blockTime, parent);
         }
+    }
+    for (const auto& obj : blocks)
+    {
+        std::string blockId = obj.blockId.data();
+        std::vector<cass_byte_t> blockNum;
+        blockNum.resize( obj.blockNum.size() );
+        for (int i = 0; i < obj.blockNum.size(); i++)
+        {
+            blockNum[i] = obj.blockNum[i];
+        }
+        std::string block = obj.block.data();
+        bool irreversible = obj.irreversible;
+        insertBlock(blockId, blockNum, std::move(block), irreversible);
+    }
+    for (const auto& obj : transactions)
+    {
+        std::string transactionId = obj.transactionId.data();
+        std::string transaction = obj.transaction.data();
+        insertTransaction(transactionId, std::move(transaction));
+    }
+    for (const auto& obj : transactionTraces)
+    {
+        std::string transactionId = obj.transactionId.data();
+        std::vector<cass_byte_t> blockNum;
+        blockNum.resize( obj.blockNum.size() );
+        for (int i = 0; i < obj.blockNum.size(); i++)
+        {
+            blockNum[i] = obj.blockNum[i];
+        }
+        fc::time_point blockTime = obj.blockTime;
+        std::string transactionTrace = obj.transactionTrace.data();
+        insertTransactionTrace(transactionId, blockNum, blockTime, std::move(transactionTrace));
     }
 }
 
@@ -836,14 +906,32 @@ void CassandraClient::insertBlock(
     cass_statement_bind_bytes_by_name(statement, "block_num", blockNumBuffer.data(), blockNumBuffer.size());
     cass_statement_bind_string_by_name(statement, "doc", block.c_str());
     auto gFuture = executeStatement(std::move(gStatement));
+
+    bool errorHandled = false;
+    auto f = [&, this]()
+    {
+        if (errorHandled) return;
+        std::lock_guard<std::mutex> lock(db_mtx);
+        countBlock++;
+
+        failed.create<eosio::insert_block_object>([&]( auto& obj ) {
+            obj.blockId.resize(id.size());
+            std::copy(id.begin(), id.end(), obj.blockId.begin());
+            obj.setBlockNum(blockNumBuffer);
+            obj.block.resize(block.size());
+            std::copy(block.begin(), block.end(), obj.block.begin());
+            obj.irreversible = irreversible;
+        });
+        errorHandled = true; //needs to be set so only one object will be written to db even if multiple waitFuture fail
+    };
     if (irreversible) {
         statement = cass_prepared_bind(gPreparedUpdateIrreversible_.get());
         gStatement.reset(statement);
         cass_statement_bind_bytes_by_name(statement, "block_num", blockNumBuffer.data(), blockNumBuffer.size());
         auto gFuture = executeStatement(std::move(gStatement));
-        waitFuture(std::move(gFuture));
+        waitFuture(std::move(gFuture), f);
     }
-    waitFuture(std::move(gFuture));
+    waitFuture(std::move(gFuture), f);
 }
 
 void CassandraClient::insertTransaction(
@@ -855,7 +943,23 @@ void CassandraClient::insertTransaction(
     cass_statement_bind_string_by_name(statement, "id", id.c_str());
     cass_statement_bind_string_by_name(statement, "doc", transaction.c_str());
     auto gFuture = executeStatement(std::move(gStatement));
-    waitFuture(std::move(gFuture));
+
+    bool errorHandled = false;
+    auto f = [&, this]()
+    {
+        if (errorHandled) return;
+        std::lock_guard<std::mutex> lock(db_mtx);
+        countTransaction++;
+
+        failed.create<eosio::insert_transaction_object>([&]( auto& obj ) {
+            obj.transactionId.resize(id.size());
+            std::copy(id.begin(), id.end(), obj.transactionId.begin());
+            obj.transaction.resize(transaction.size());
+            std::copy(transaction.begin(), transaction.end(), obj.transaction.begin());
+        });
+        errorHandled = true; //needs to be set so only one object will be written to db even if multiple waitFuture fail
+    };
+    waitFuture(std::move(gFuture), f);
 }
 
 void CassandraClient::insertTransactionTrace(
@@ -872,7 +976,25 @@ void CassandraClient::insertTransactionTrace(
     cass_statement_bind_uint32_by_name(statement, "block_date", blockDate);
     cass_statement_bind_string_by_name(statement, "doc", transactionTrace.c_str());
     auto gFuture = executeStatement(std::move(gStatement));
-    waitFuture(std::move(gFuture));
+
+    bool errorHandled = false;
+    auto f = [&, this]()
+    {
+        if (errorHandled) return;
+        std::lock_guard<std::mutex> lock(db_mtx);
+        countTransactionTrace++;
+
+        failed.create<eosio::insert_transaction_trace_object>([&]( auto& obj ) {
+            obj.transactionId.resize(id.size());
+            std::copy(id.begin(), id.end(), obj.transactionId.begin());
+            obj.setBlockNum(blockNumBuffer);
+            obj.blockTime = blockTime;
+            obj.transactionTrace.resize(transactionTrace.size());
+            std::copy(transactionTrace.begin(), transactionTrace.end(), obj.transactionTrace.begin());
+        });
+        errorHandled = true; //needs to be set so only one object will be written to db even if multiple waitFuture fail
+    };
+    waitFuture(std::move(gFuture), f);
 }
 
 

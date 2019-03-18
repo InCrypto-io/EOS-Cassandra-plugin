@@ -906,7 +906,6 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
             } ));
 
          my->init();
-         //appbase::app().quit();
       } else {
          wlog( "eosio::cassandra_history_plugin configured, but no --cassandra-url or --cassandra-keyspace specified." );
          wlog( "cassandra_history_plugin disabled." );

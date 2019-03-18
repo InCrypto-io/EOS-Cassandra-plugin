@@ -111,6 +111,9 @@ private:
     int countAccAcTraceShard = 0;
     int countAcTrace = 0;
     int countAcTraceWP = 0;
+    int countBlock = 0;
+    int countTransaction = 0;
+    int countTransactionTrace = 0;
 
     cluster_guard gCluster_;
     session_guard gSession_;

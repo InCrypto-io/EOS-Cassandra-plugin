@@ -21,7 +21,9 @@ namespace eosio
         insert_account_action_trace,
         insert_account_action_trace_shard,
         insert_action_trace,
-        //TODO: continue list
+        insert_block,
+        insert_transaction,
+        insert_transaction_trace,
         OBJECT_TYPE_COUNT
     };
 
@@ -43,7 +45,7 @@ namespace eosio
         chain::shared_blob globalSeq;
         fc::time_point blockTime;
         chain::shared_blob parent;
-        
+
         void setGlobalSeq(const std::vector<cass_byte_t>& gs)
         {
             globalSeq.resize( gs.size() );
@@ -91,6 +93,49 @@ namespace eosio
             for (int i = 0; i < p.size(); i++)
             {
                 parent[i] = p[i];
+            }
+        }
+    };
+    class insert_block_object : public chainbase::object<cass_query_object_type::insert_block, insert_block_object> {
+        OBJECT_CTOR(insert_block_object,(blockId)(blockNum)(block))
+
+        id_type id;
+        chain::shared_blob blockId;
+        chain::shared_blob blockNum;
+        chain::shared_blob block;
+        bool irreversible;
+
+        void setBlockNum(const std::vector<cass_byte_t>& num)
+        {
+            blockNum.resize( num.size() );
+            for (int i = 0; i < num.size(); i++)
+            {
+                blockNum[i] = num[i];
+            }
+        }
+    };
+    class insert_transaction_object : public chainbase::object<cass_query_object_type::insert_transaction, insert_transaction_object> {
+        OBJECT_CTOR(insert_transaction_object,(transactionId)(transaction))
+
+        id_type id;
+        chain::shared_blob transactionId;
+        chain::shared_blob transaction;
+    };
+    class insert_transaction_trace_object : public chainbase::object<cass_query_object_type::insert_transaction_trace, insert_transaction_trace_object> {
+        OBJECT_CTOR(insert_transaction_trace_object,(transactionId)(blockNum)(transactionTrace))
+
+        id_type id;
+        chain::shared_blob transactionId;
+        chain::shared_blob blockNum;
+        fc::time_point blockTime;
+        chain::shared_blob transactionTrace;
+
+        void setBlockNum(const std::vector<cass_byte_t>& num)
+        {
+            blockNum.resize( num.size() );
+            for (int i = 0; i < num.size(); i++)
+            {
+                blockNum[i] = num[i];
             }
         }
     };
@@ -148,6 +193,30 @@ namespace eosio
         >
     >;
     typedef chainbase::generic_index<insert_action_trace_multi_index> insert_action_trace_index;
+
+    using insert_block_multi_index = chainbase::shared_multi_index_container<
+        insert_block_object,
+        indexed_by<
+            ordered_unique<tag<by_id>, BOOST_MULTI_INDEX_MEMBER(insert_block_object, insert_block_object::id_type, id)>
+        >
+    >;
+    typedef chainbase::generic_index<insert_block_multi_index> insert_block_index;
+
+    using insert_transaction_multi_index = chainbase::shared_multi_index_container<
+        insert_transaction_object,
+        indexed_by<
+            ordered_unique<tag<by_id>, BOOST_MULTI_INDEX_MEMBER(insert_transaction_object, insert_transaction_object::id_type, id)>
+        >
+    >;
+    typedef chainbase::generic_index<insert_transaction_multi_index> insert_transaction_index;
+
+    using insert_transaction_trace_multi_index = chainbase::shared_multi_index_container<
+        insert_transaction_trace_object,
+        indexed_by<
+            ordered_unique<tag<by_id>, BOOST_MULTI_INDEX_MEMBER(insert_transaction_trace_object, insert_transaction_trace_object::id_type, id)>
+        >
+    >;
+    typedef chainbase::generic_index<insert_transaction_trace_multi_index> insert_transaction_trace_index;
 }
 
 
@@ -155,8 +224,14 @@ CHAINBASE_SET_INDEX_TYPE( eosio::upsert_account_object,                    eosio
 CHAINBASE_SET_INDEX_TYPE( eosio::insert_account_action_trace_object,       eosio::insert_account_action_trace_multi_index )
 CHAINBASE_SET_INDEX_TYPE( eosio::insert_account_action_trace_shard_object, eosio::insert_account_action_trace_shard_multi_index )
 CHAINBASE_SET_INDEX_TYPE( eosio::insert_action_trace_object,               eosio::insert_action_trace_multi_index )
+CHAINBASE_SET_INDEX_TYPE( eosio::insert_block_object,                      eosio::insert_block_multi_index )
+CHAINBASE_SET_INDEX_TYPE( eosio::insert_transaction_object,                eosio::insert_transaction_multi_index )
+CHAINBASE_SET_INDEX_TYPE( eosio::insert_transaction_trace_object,          eosio::insert_transaction_trace_multi_index )
 
 FC_REFLECT( eosio::upsert_account_object, (name)(blockTime)(data) )
 FC_REFLECT( eosio::insert_account_action_trace_object, (account)(shardId)(globalSeq)(blockTime)(parent) )
 FC_REFLECT( eosio::insert_account_action_trace_shard_object, (account)(shardId) )
 FC_REFLECT( eosio::insert_action_trace_object, (globalSeq)(blockTime)(actionTrace)(parent) )
+FC_REFLECT( eosio::insert_block_object, (blockId)(blockNum)(block)(irreversible) )
+FC_REFLECT( eosio::insert_transaction_object, (transactionId)(transaction) )
+FC_REFLECT( eosio::insert_transaction_trace_object, (transactionId)(blockNum)(blockTime)(transactionTrace) )
