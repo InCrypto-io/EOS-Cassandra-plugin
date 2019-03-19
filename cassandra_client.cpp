@@ -74,14 +74,16 @@ CassandraClient::CassandraClient(const std::string& hostUrl, const std::string& 
         ilog("Connected to Apache Cassandra");
         prepareStatements();
         initLib();
+        insertFailed();
     }
     else
     {
         const char* message;
         size_t message_length;
         cass_future_error_message(connectFuture, &message, &message_length);
-        elog("Unable to connect to Apache Cassandra: ${desc}", ("desc", std::string(message, message_length)));
-        appbase::app().quit();
+        std::string error_str(message, message_length);
+        elog("Unable to connect to Apache Cassandra: ${desc}", ("desc", error_str));
+        throw std::runtime_error(error_str);
     }
 }
 
@@ -835,14 +837,6 @@ void CassandraClient::insertActionTrace(
         if (errorHandled) return;
         std::lock_guard<std::mutex> lock(db_mtx);
         countAcTrace++;
-
-        std::cout << "Block time: " << fc::string(blockTime) << std::endl;
-        std::cout << "Global seq" << std::endl;
-        for (auto& b : globalSeq)
-        {
-            std::cout << (int)b;
-        }
-        std::cout << std::endl;
 
         failed.create<eosio::insert_action_trace_object>([&]( auto& obj ) {
             obj.setGlobalSeq(globalSeq);

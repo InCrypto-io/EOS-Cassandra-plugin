@@ -858,7 +858,6 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
          std::string url_str = options.at( "cassandra-url" ).as<std::string>();
          std::string keyspace_str = options.at( "cassandra-keyspace" ).as<std::string>();
          my->cas_client.reset( new CassandraClient(url_str, keyspace_str) );
-         my->cas_client->insertFailed();
 
          if(options.at( "replay-blockchain" ).as<bool>() ||
             options.at( "hard-replay-blockchain" ).as<bool>() ||
