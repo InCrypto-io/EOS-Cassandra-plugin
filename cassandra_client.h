@@ -106,14 +106,6 @@ private:
 
     chainbase::database failed;
     std::mutex db_mtx;
-    int countAcc = 0;
-    int countAccAcTrace = 0;
-    int countAccAcTraceShard = 0;
-    int countAcTrace = 0;
-    int countAcTraceWP = 0;
-    int countBlock = 0;
-    int countTransaction = 0;
-    int countTransactionTrace = 0;
 
     cluster_guard gCluster_;
     session_guard gSession_;

@@ -89,14 +89,6 @@ CassandraClient::CassandraClient(const std::string& hostUrl, const std::string& 
 
 CassandraClient::~CassandraClient()
 {
-    std::cout << "countAcc: " << countAcc << std::endl;
-    std::cout << "countAccAcTrace: " << countAccAcTrace << std::endl;
-    std::cout << "countAccAcTraceShard: " << countAccAcTraceShard << std::endl;
-    std::cout << "countAcTrace: " << countAcTrace << std::endl;
-    std::cout << "countAcTraceWP: " << countAcTraceWP << std::endl;
-    std::cout << "countBlock: " << countBlock << std::endl;
-    std::cout << "countTransaction: " << countTransaction << std::endl;
-    std::cout << "countTransactionTrace: " << countTransactionTrace << std::endl;
 }
 
 
@@ -124,77 +116,41 @@ void CassandraClient::insertFailed()
     std::vector<eosio::insert_block_object> blocks;
     std::vector<eosio::insert_transaction_object> transactions;
     std::vector<eosio::insert_transaction_trace_object> transactionTraces;
-    int cAcc = 0;
-    int cAccAcTrace = 0;
-    int cAccAcTraceShard = 0;
-    int cAcTrace = 0;
-    int cBlock = 0;
-    int cTx = 0;
-    int cTxTrace = 0;
-    for (auto it = std::begin(accountUpsertsIdx); it != std::end(accountUpsertsIdx); it++)
-    {
-        cAcc++;
-        accUpserts.push_back(*it);
-    }
-    for (auto it = std::begin(insertAccountActionTraceIdx); it != std::end(insertAccountActionTraceIdx); it++)
-    {
-        cAccAcTrace++;
-        accActionTraces.push_back(*it);
-    }
-    for (auto it = std::begin(insertAccountActionTraceShardIdx); it != std::end(insertAccountActionTraceShardIdx); it++)
-    {
-        cAccAcTraceShard++;
-        accActionTraceShards.push_back(*it);
-    }
-    for (auto it = std::begin(insertActionTraceIdx); it != std::end(insertActionTraceIdx); it++)
-    {
-        cAcTrace++;
-        actionTraces.push_back(*it);
-    }
-    for (auto it = std::begin(insertBlockIdx); it != std::end(insertBlockIdx); it++)
-    {
-        cBlock++;
-        blocks.push_back(*it);
-    }
-    for (auto it = std::begin(insertTransactionIdx); it != std::end(insertTransactionIdx); it++)
-    {
-        cTx++;
-        transactions.push_back(*it);
-    }
-    for (auto it = std::begin(insertTransactionTraceIdx); it != std::end(insertTransactionTraceIdx); it++)
-    {
-        cTxTrace++;
-        transactionTraces.push_back(*it);
-    }
-    std::cout << "cAcc C: " << cAcc << std::endl;
-    std::cout << "cAccAcTrace C: " << cAccAcTrace << std::endl;
-    std::cout << "cAccAcTraceShard C: " << cAccAcTraceShard << std::endl;
-    std::cout << "cAcTrace C: " << cAcTrace << std::endl;
-    std::cout << "cBlock C: " << cBlock << std::endl;
-    std::cout << "cTx C: " << cTx << std::endl;
-    std::cout << "cTxTrace C: " << cTxTrace << std::endl;
-    std::cout << "Free memory: " << failed.get_free_memory() << std::endl; //4294965120
 
     while(!accountUpsertsIdx.empty()) {
-        failed.remove(*accountUpsertsIdx.begin());
+        auto it = accountUpsertsIdx.begin();
+        accUpserts.push_back(*it);
+        failed.remove(*it);
     }
     while(!insertAccountActionTraceIdx.empty()) {
-        failed.remove(*insertAccountActionTraceIdx.begin());
+        auto it = insertAccountActionTraceIdx.begin();
+        accActionTraces.push_back(*it);
+        failed.remove(*it);
     }
     while(!insertAccountActionTraceShardIdx.empty()) {
-        failed.remove(*insertAccountActionTraceShardIdx.begin());
+        auto it = insertAccountActionTraceShardIdx.begin();
+        accActionTraceShards.push_back(*it);
+        failed.remove(*it);
     }
     while(!insertActionTraceIdx.empty()) {
-        failed.remove(*insertActionTraceIdx.begin());
+        auto it = insertActionTraceIdx.begin();
+        actionTraces.push_back(*it);
+        failed.remove(*it);
     }
     while(!insertBlockIdx.empty()) {
-        failed.remove(*insertBlockIdx.begin());
+        auto it = insertBlockIdx.begin();
+        blocks.push_back(*it);
+        failed.remove(*it);
     }
     while(!insertTransactionIdx.empty()) {
-        failed.remove(*insertTransactionIdx.begin());
+        auto it = insertTransactionIdx.begin();
+        transactions.push_back(*it);
+        failed.remove(*it);
     }
     while(!insertTransactionTraceIdx.empty()) {
-        failed.remove(*insertTransactionTraceIdx.begin());
+        auto it = insertTransactionTraceIdx.begin();
+        transactionTraces.push_back(*it);
+        failed.remove(*it);
     }
 
     for (const auto& obj : accUpserts)
@@ -274,10 +230,7 @@ void CassandraClient::insertFailed()
         if (!obj.actionTrace.empty())
         {
             std::string s;
-            // s.resize(obj.actionTrace.size());
-            // std::copy(obj.actionTrace.begin(), obj.actionTrace.end()/* + obj.actionTrace.size()*/, s.begin());
             s = obj.actionTrace.data();
-            //std::cout << s << std::endl;
             insertActionTrace(globalSeq, blockTime, std::move(s));
         }
         else
@@ -406,7 +359,6 @@ void CassandraClient::batchInsertActionTraceWithParent(
             fc::time_point blockTime;
             std::vector<cass_byte_t> parent;
             std::tie(globalSeq, blockTime, parent) = val;
-            countAcTraceWP++;
 
             failed.create<eosio::insert_action_trace_object>([&]( auto& obj ) {
                 obj.setGlobalSeq(globalSeq);
@@ -463,7 +415,6 @@ void CassandraClient::batchInsertAccountActionTrace(
             std::vector<cass_byte_t> parent;
             std::tie(account, shardId, globalSeq, blockTime, parent) = val;
             bool withParent = parent.size() != 0;
-            countAccAcTrace++;
 
             failed.create<eosio::insert_account_action_trace_object>([&]( auto& obj ) {
                 obj.account = account;
@@ -523,7 +474,6 @@ void CassandraClient::insertAccount(
     {
         if (errorHandled) return;
         std::lock_guard<std::mutex> lock(db_mtx);
-        countAcc++;
 
         failed.create<eosio::upsert_account_object>([&]( auto& obj ) {
             obj.name = eosio::chain::newaccount::get_name();
@@ -606,7 +556,6 @@ void CassandraClient::deleteAccountAuth(
     {
         if (errorHandled) return;
         std::lock_guard<std::mutex> lock(db_mtx);
-        countAcc++;
 
         failed.create<eosio::upsert_account_object>([&]( auto& obj ) {
             obj.name = eosio::chain::deleteauth::get_name();
@@ -646,7 +595,6 @@ void CassandraClient::updateAccountAuth(
     {
         if (errorHandled) return;
         std::lock_guard<std::mutex> lock(db_mtx);
-        countAcc++;
 
         failed.create<eosio::upsert_account_object>([&]( auto& obj ) {
             obj.name = eosio::chain::updateauth::get_name();
@@ -717,7 +665,6 @@ void CassandraClient::updateAccountAbi(
     {
         if (errorHandled) return;
         std::lock_guard<std::mutex> lock(db_mtx);
-        countAcc++;
 
         failed.create<eosio::upsert_account_object>([&]( auto& obj ) {
             obj.name = eosio::chain::setabi::get_name();
@@ -750,7 +697,6 @@ void CassandraClient::insertAccountActionTrace(
     {
         if (errorHandled) return;
         std::lock_guard<std::mutex> lock(db_mtx);
-        countAccAcTrace++;
 
         failed.create<eosio::insert_account_action_trace_object>([&]( auto& obj ) {
             obj.account = account;
@@ -787,7 +733,6 @@ void CassandraClient::insertAccountActionTraceWithParent(
     {
         if (errorHandled) return;
         std::lock_guard<std::mutex> lock(db_mtx);
-        countAccAcTrace++;
 
         failed.create<eosio::insert_account_action_trace_object>([&]( auto& obj ) {
             obj.account = account;
@@ -823,7 +768,6 @@ void CassandraClient::insertAccountActionTraceShard(
     {
         if (errorHandled) return;
         std::lock_guard<std::mutex> lock(db_mtx);
-        countAccAcTraceShard++;
 
         failed.create<eosio::insert_account_action_trace_shard_object>([&]( auto& obj ) {
             obj.account = account;
@@ -853,7 +797,6 @@ void CassandraClient::insertActionTrace(
     {
         if (errorHandled) return;
         std::lock_guard<std::mutex> lock(db_mtx);
-        countAcTrace++;
 
         failed.create<eosio::insert_action_trace_object>([&]( auto& obj ) {
             obj.setGlobalSeq(globalSeq);
@@ -890,7 +833,6 @@ void CassandraClient::insertActionTraceWithParent(
     {
         if (errorHandled) return;
         std::lock_guard<std::mutex> lock(db_mtx);
-        countAcTraceWP++;
 
         failed.create<eosio::insert_action_trace_object>([&]( auto& obj ) {
             obj.setGlobalSeq(globalSeq);
@@ -926,7 +868,6 @@ void CassandraClient::insertBlock(
     {
         if (errorHandled) return;
         std::lock_guard<std::mutex> lock(db_mtx);
-        countBlock++;
 
         failed.create<eosio::insert_block_object>([&]( auto& obj ) {
             obj.blockId.resize(id.size());
@@ -973,7 +914,6 @@ void CassandraClient::insertTransaction(
     {
         if (errorHandled) return;
         std::lock_guard<std::mutex> lock(db_mtx);
-        countTransaction++;
 
         failed.create<eosio::insert_transaction_object>([&]( auto& obj ) {
             obj.transactionId.resize(id.size());
@@ -1006,7 +946,6 @@ void CassandraClient::insertTransactionTrace(
     {
         if (errorHandled) return;
         std::lock_guard<std::mutex> lock(db_mtx);
-        countTransactionTrace++;
 
         failed.create<eosio::insert_transaction_trace_object>([&]( auto& obj ) {
             obj.transactionId.resize(id.size());

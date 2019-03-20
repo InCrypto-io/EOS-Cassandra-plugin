@@ -116,7 +116,6 @@ class cassandra_history_plugin_impl {
 
    void init();
 
-   fc::time_point init_time;
    uint32_t start_block_num = 0;
    std::atomic_bool start_block_reached{false};
 
@@ -239,10 +238,6 @@ cassandra_history_plugin_impl::~cassandra_history_plugin_impl()
          condition.notify_one();
 
          consume_thread.join();
-
-         auto end_time = fc::time_point::now();
-         fc::microseconds dur = end_time - init_time;
-         ilog("Time passed while processing blocks: ${time}", ("time", dur.to_seconds()));
       } catch( std::exception& e ) {
          elog( "Exception on cassandra_history_plugin shutdown of consume thread: ${e}", ("e", e.what()));
       }
@@ -254,10 +249,6 @@ void cassandra_history_plugin_impl::init() {
    consume_thread = boost::thread([this] { consume_blocks(); });
 
    startup = false;
-
-   if (start_block_reached) {
-      init_time = fc::time_point::now();
-   }
 }
 
 
@@ -392,7 +383,6 @@ void cassandra_history_plugin_impl::on_accepted_block( const chain::block_state_
       if( !start_block_reached ) {
          if( bs->block_num >= start_block_num ) {
             start_block_reached = true;
-            init_time = fc::time_point::now();
          }
       }
       if( start_block_reached ) {
