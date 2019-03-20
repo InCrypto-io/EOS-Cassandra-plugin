@@ -1,7 +1,23 @@
 #pragma once
 #include <cassandra.h>
+
+#include <functional>
 #include <iostream>
 
+
+class exit_scope
+{
+public:
+	exit_scope( const std::function<void(void)>& callback ):callback_(callback){}
+	~exit_scope(){ if (callback_) callback_(); }
+
+    void reset() { callback_ = std::function<void()>(); }
+private:
+	exit_scope();
+	exit_scope(const exit_scope&);
+	exit_scope& operator =(const exit_scope&);
+	std::function<void(void)> callback_;
+};
 
 
 template <typename T, typename ReleaseFunctionType>
