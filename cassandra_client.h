@@ -20,10 +20,10 @@
 class CassandraClient
 {
 public:
-    CassandraClient(const std::string& hostUrl, const std::string& keyspace);
+    CassandraClient(const std::string& hostUrl, const std::string& keyspace, size_t replicationFactor);
     ~CassandraClient();
 
-    void initLib();
+    void init();
     void insertFailed();
     void prepareStatements();
 
@@ -78,13 +78,9 @@ public:
         fc::time_point blockTime,
         std::string&& transactionTrace);
 
-    void truncateTable(const std::string& table);
-    void truncateTables();
+    void resetKeyspace();
 
-
-    future_guard executeBatch(batch_guard&& b);
-    void waitFuture(future_guard&& gFuture);
-    void waitFuture(future_guard&& gFuture, const std::function<void()>& onError);
+    void execute(const std::string& query);
 
 
     static const std::string account_table;
@@ -103,10 +99,15 @@ private:
     CassandraClient& operator=(const CassandraClient& other) = delete;
 
     future_guard executeStatement(statement_guard&& gStatement);
+    future_guard executeBatch(batch_guard&& b);
+    void waitFuture(future_guard&& gFuture);
+    void waitFuture(future_guard&& gFuture, const std::function<void()>& onError);
 
     chainbase::database failed;
     std::mutex db_mtx;
 
+    std::string keyspace_;
+    size_t replicationFactor_;
     cluster_guard gCluster_;
     session_guard gSession_;
     prepared_guard gPreparedDeleteAccountPublicKeys_;

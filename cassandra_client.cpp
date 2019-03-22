@@ -1,10 +1,10 @@
 #include "cassandra_client.h"
 
 #include <algorithm>
-#include <bitset>
 #include <cstddef>
 #include <ctime>
 #include <memory>
+#include <string>
 #include <type_traits>
 
 #include <appbase/application.hpp>
@@ -25,8 +25,10 @@ const std::string CassandraClient::transaction_table                 = "transact
 const std::string CassandraClient::transaction_trace_table           = "transaction_trace";
 
 
-CassandraClient::CassandraClient(const std::string& hostUrl, const std::string& keyspace)
+CassandraClient::CassandraClient(const std::string& hostUrl, const std::string& keyspace, size_t replicationFactor)
     : failed(appbase::app().data_dir() / "cass_failed", eosio::chain::database::read_write, 4096*1024*1024ll),
+    keyspace_(keyspace),
+    replicationFactor_(replicationFactor),
     gCluster_(nullptr, cass_cluster_free),
     gSession_(nullptr, cass_session_free),
     gPreparedDeleteAccountPublicKeys_(nullptr, cass_prepared_free),
@@ -65,15 +67,15 @@ CassandraClient::CassandraClient(const std::string& hostUrl, const std::string& 
 
     session = cass_session_new();
     gSession_.reset(session);
-    connectFuture = cass_session_connect_keyspace(session, cluster, keyspace.c_str());
+    connectFuture = cass_session_connect(session, cluster);
     auto gFuture = future_guard(connectFuture, cass_future_free);
     err = cass_future_error_code(connectFuture);
 
     if (err == CASS_OK)
     {
         ilog("Connected to Apache Cassandra");
+        init();
         prepareStatements();
-        initLib();
         insertFailed();
     }
     else
@@ -92,12 +94,33 @@ CassandraClient::~CassandraClient()
 }
 
 
-void CassandraClient::initLib()
+void CassandraClient::init()
 {
-    auto statement = cass_statement_new(("INSERT INTO " + lib_table + " (part_key, block_num) VALUES(0, 0) IF NOT EXISTS;").c_str(), 0);
-    statement_guard gStatement(statement, cass_statement_free);
-    auto gInitLIBFuture = executeStatement(std::move(gStatement));
-    waitFuture(std::move(gInitLIBFuture));
+    execute("CREATE KEYSPACE IF NOT EXISTS " + keyspace_ +
+        " WITH REPLICATION = { 'class': 'SimpleStrategy', 'replication_factor': " + std::to_string(replicationFactor_) + " };");
+    execute("USE " + keyspace_ + ";");
+    
+    execute("CREATE TABLE IF NOT EXISTS " + action_trace_table + "( global_seq varint, block_date date, block_time timestamp, parent varint, doc text, "
+        "PRIMARY KEY(block_date, block_time, global_seq));");
+    execute("CREATE INDEX IF NOT EXISTS ON " + keyspace_ + "." + action_trace_table + " (global_seq);");
+    execute("CREATE TABLE IF NOT EXISTS " + account_action_trace_shard_table + " ( account_name text, shard_id timestamp, "
+        "PRIMARY KEY(account_name, shard_id));");
+    execute("CREATE TABLE IF NOT EXISTS " + account_action_trace_table +
+        " (shard_id timestamp, account_name text, global_seq varint, block_time timestamp, parent varint, "
+        "PRIMARY KEY((account_name, shard_id), block_time, global_seq));");
+    execute("CREATE TABLE IF NOT EXISTS " + transaction_table + " (id text, doc text, PRIMARY KEY(id));");
+    execute("CREATE TABLE IF NOT EXISTS " + transaction_trace_table + " (id text, block_num varint, block_date date, doc text, PRIMARY KEY(id));");
+    execute("CREATE TABLE IF NOT EXISTS " + block_table + " (id text, block_num varint, irreversible boolean, doc text, PRIMARY KEY(id));");
+    execute("CREATE INDEX IF NOT EXISTS ON " + keyspace_ + "." + block_table + " (block_num);");
+    execute("CREATE TABLE IF NOT EXISTS " + lib_table + " (part_key int, block_num varint, PRIMARY KEY(part_key));");
+    execute("CREATE TABLE IF NOT EXISTS " + account_table + " (name text, creator text, account_create_time timestamp, abi text, PRIMARY KEY(name));");
+    execute("CREATE TABLE IF NOT EXISTS " + account_public_key_table + " (name text, permission text, key text, PRIMARY KEY(name, permission));");
+    execute("CREATE INDEX IF NOT EXISTS ON " + keyspace_ + "." + account_public_key_table + " (key);");
+    execute("CREATE TABLE IF NOT EXISTS " + account_controlling_account_table + " (name text, controlling_name text, permission text, "
+        "PRIMARY KEY(name, permission));");
+    execute("CREATE INDEX IF NOT EXISTS ON " + keyspace_ + "." + account_controlling_account_table + " (controlling_name);");
+
+    execute("INSERT INTO " + lib_table + " (part_key, block_num) VALUES(0, 0) IF NOT EXISTS;");
 }
 
 void CassandraClient::insertFailed()
@@ -973,29 +996,15 @@ void CassandraClient::insertTransactionTrace(
 }
 
 
-void CassandraClient::truncateTable(const std::string& table)
+void CassandraClient::resetKeyspace()
 {
-    auto statement = cass_statement_new(("TRUNCATE " + table + ";").c_str(), 0);
-    auto gStatement = statement_guard(statement, cass_statement_free);
-    cass_statement_set_request_timeout(statement, 0);
-    auto gFuture = executeStatement(std::move(gStatement));
-    waitFuture(std::move(gFuture));
+    execute("DROP KEYSPACE IF EXISTS " + keyspace_ + ";");
+    init();
 }
-    
-void CassandraClient::truncateTables()
-{
-    truncateTable(account_table);
-    truncateTable(account_public_key_table);
-    truncateTable(account_controlling_account_table);
-    truncateTable(account_action_trace_table);
-    truncateTable(account_action_trace_shard_table);
-    truncateTable(action_trace_table);
-    truncateTable(block_table);
-    truncateTable(lib_table);
-    truncateTable(transaction_table);
-    truncateTable(transaction_trace_table);
 
-    auto statement = cass_statement_new(("INSERT INTO " + lib_table + "(part_key, block_num) VALUES(0, 0);").c_str(), 0);
+void CassandraClient::execute(const std::string& query)
+{
+    auto statement = cass_statement_new(query.c_str(), 0);
     auto gStatement = statement_guard(statement, cass_statement_free);
     auto gFuture = executeStatement(std::move(gStatement));
     waitFuture(std::move(gFuture));

@@ -773,6 +773,8 @@ void cassandra_history_plugin::set_program_options(options_description&, options
           "cassandra URL connection string If not specified then plugin is disabled.")
          ("cassandra-keyspace", bpo::value<std::string>(),
           "cassandra keyspace where data is located.")
+         ("cassandra-replication-factor", bpo::value<size_t>()->default_value(1),
+          "replication factor that will be used to create cassandra keyspace.")
          ("cassandra-wipe", bpo::bool_switch()->default_value(false),
           "Only used with --replay-blockchain, --hard-replay-blockchain, or --delete-all-blocks to wipe cassandra db.")
          ("cassandra-block-start", bpo::value<uint32_t>()->default_value(0),
@@ -847,14 +849,15 @@ void cassandra_history_plugin::plugin_initialize(const variables_map& options) {
          
          std::string url_str = options.at( "cassandra-url" ).as<std::string>();
          std::string keyspace_str = options.at( "cassandra-keyspace" ).as<std::string>();
-         my->cas_client.reset( new CassandraClient(url_str, keyspace_str) );
+         size_t replication_factor = options.at( "cassandra-replication-factor" ).as<size_t>();
+         my->cas_client.reset( new CassandraClient(url_str, keyspace_str, replication_factor) );
 
          if(options.at( "replay-blockchain" ).as<bool>() ||
             options.at( "hard-replay-blockchain" ).as<bool>() ||
             options.at( "delete-all-blocks" ).as<bool>()) {
             if( options.at( "cassandra-wipe" ).as<bool>()) {
                ilog( "Wiping cassandra on startup" );
-               my->cas_client->truncateTables();
+               my->cas_client->resetKeyspace();
                fc::remove_all( app().data_dir() / "cass_shard" );
             }
          }
