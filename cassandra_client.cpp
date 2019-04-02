@@ -435,6 +435,7 @@ void CassandraClient::batchInsertDateActionTrace(
     CassStatement* statement = nullptr;
     auto batch = cass_batch_new(CASS_BATCH_TYPE_LOGGED);
     batch_guard gBatch(batch, cass_batch_free);
+    size_t batchCount = 0;
 
     for (const auto& val : data)
     {
@@ -456,6 +457,17 @@ void CassandraClient::batchInsertDateActionTrace(
             cass_statement_bind_bytes_by_name(statement, "parent", parent.data(), parent.size());
         }
         cass_batch_add_statement(batch, statement);
+
+        batchCount++;
+        if (batchCount == 10) {
+            auto future = cass_session_execute_batch(gSession_.get(), batch);
+            future_guard gFuture(future, cass_future_free);
+            waitFuture(std::move(gFuture), f);
+
+            batch = cass_batch_new(CASS_BATCH_TYPE_LOGGED);
+            gBatch.reset(batch);
+            batchCount = 0;
+        }
     }
     auto future = cass_session_execute_batch(gSession_.get(), batch);
     future_guard gFuture(future, cass_future_free);
@@ -500,6 +512,7 @@ void CassandraClient::batchInsertAccountActionTrace(
     CassStatement* statement = nullptr;
     auto batch = cass_batch_new(CASS_BATCH_TYPE_LOGGED);
     batch_guard gBatch(batch, cass_batch_free);
+    size_t batchCount = 0;
 
     for (const auto& val : data)
     {
@@ -524,6 +537,17 @@ void CassandraClient::batchInsertAccountActionTrace(
             cass_statement_bind_bytes_by_name(statement, "parent", parent.data(), parent.size());
         }
         cass_batch_add_statement(batch, statement);
+
+        batchCount++;
+        if (batchCount == 10) {
+            auto future = cass_session_execute_batch(gSession_.get(), batch);
+            future_guard gFuture(future, cass_future_free);
+            waitFuture(std::move(gFuture), f);
+
+            batch = cass_batch_new(CASS_BATCH_TYPE_LOGGED);
+            gBatch.reset(batch);
+            batchCount = 0;
+        }
     }
     auto future = cass_session_execute_batch(gSession_.get(), batch);
     future_guard gFuture(future, cass_future_free);
