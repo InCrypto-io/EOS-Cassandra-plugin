@@ -27,6 +27,9 @@ public:
     void insertFailed();
     void prepareStatements();
 
+    void setRetryDelay(size_t retry_delay_ms) { retry_delay_ms_ = retry_delay_ms; }
+    void setMaxRetries(size_t max_retries) { max_retries_ = max_retries; }
+
     void batchInsertDateActionTrace(
         const std::vector<std::tuple<std::vector<cass_byte_t>, fc::time_point, std::vector<cass_byte_t>>>& data);
     void batchInsertAccountActionTrace(
@@ -95,8 +98,6 @@ public:
     static const std::string transaction_table;
     static const std::string transaction_trace_table;
 
-    static const size_t ms_before_retry;
-
 private:
     CassandraClient(const CassandraClient& other) = delete;
     CassandraClient& operator=(const CassandraClient& other) = delete;
@@ -127,6 +128,9 @@ private:
 
     std::string keyspace_;
     size_t replicationFactor_;
+    size_t retry_delay_ms_ = 200;
+    size_t max_retries_ = 2;
+
     cluster_guard gCluster_;
     session_guard gSession_;
     prepared_guard gPreparedDeleteAccountPublicKeys_;

@@ -27,8 +27,6 @@ const std::string CassandraClient::lib_table                         = "lib";
 const std::string CassandraClient::transaction_table                 = "transaction";
 const std::string CassandraClient::transaction_trace_table           = "transaction_trace";
 
-const size_t CassandraClient::ms_before_retry = 200;
-
 
 CassandraClient::CassandraClient(const std::string& hostUrl, const std::string& keyspace, size_t replicationFactor, bool dropKeyspace)
     : failed(appbase::app().data_dir() / "cass_failed", eosio::chain::database::read_write, 4096*1024*1024ll),
@@ -1114,9 +1112,10 @@ future_guard CassandraClient::execute(statement_guard&& gStatement)
 void CassandraClient::executeWait(batch_guard&& gBatch, const std::function<void()>& onError)
 {
     auto gFuture = execute(gBatch);
-    if (checkTimeout(gFuture)) {
+    size_t n = 0;
+    while (n++ < max_retries_ && checkTimeout(gFuture)) {
         ilog("Retrying to execute batch");
-        std::this_thread::sleep_for(std::chrono::milliseconds(ms_before_retry));
+        std::this_thread::sleep_for(std::chrono::milliseconds(retry_delay_ms_));
         gFuture = execute(gBatch);
     }
     waitFuture(std::move(gFuture), onError);
@@ -1125,9 +1124,10 @@ void CassandraClient::executeWait(batch_guard&& gBatch, const std::function<void
 void CassandraClient::executeWait(statement_guard&& gStatement, const std::function<void()>& onError)
 {
     auto gFuture = execute(gStatement);
-    if (checkTimeout(gFuture)) {
-        ilog("Retrying to execute batch");
-        std::this_thread::sleep_for(std::chrono::milliseconds(ms_before_retry));
+    size_t n = 0;
+    while (n++ < max_retries_ && checkTimeout(gFuture)) {
+        ilog("Retrying to execute statement");
+        std::this_thread::sleep_for(std::chrono::milliseconds(retry_delay_ms_));
         gFuture = execute(gStatement);
     }
     waitFuture(std::move(gFuture), onError);
