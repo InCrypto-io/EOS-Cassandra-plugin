@@ -82,8 +82,6 @@ public:
 
     void resetKeyspace();
 
-    void execute(const std::string& query);
-
 
     static const std::string account_table;
     static const std::string account_public_key_table;
@@ -97,14 +95,32 @@ public:
     static const std::string transaction_table;
     static const std::string transaction_trace_table;
 
+    static const size_t ms_before_retry;
+
 private:
     CassandraClient(const CassandraClient& other) = delete;
     CassandraClient& operator=(const CassandraClient& other) = delete;
 
-    future_guard executeStatement(statement_guard&& gStatement);
-    future_guard executeBatch(batch_guard&& b);
+    bool checkTimeout(future_guard& future) const;
+    void execute(const std::string& query);
+    future_guard execute(batch_guard& b);
+    future_guard execute(batch_guard&& b);
+    future_guard execute(statement_guard& gStatement);
+    future_guard execute(statement_guard&& gStatement);
+    //executes batch, if returned error is timeout then sleeps and retries again
+    //if did not succeed -> stop node
+    void executeWait(batch_guard&& b, const std::function<void()>& onError);
+    //executes statement, if returned error is timeout then sleeps and retries again
+    //if did not succeed -> stop node
+    void executeWait(statement_guard&& gStatement, const std::function<void()>& onError);
+    //wait for future to return something
+    //if error returned -> stop node
     void waitFuture(future_guard&& gFuture);
+    //wait for future to return something
+    //if error returned -> execute callback and stop node
     void waitFuture(future_guard&& gFuture, const std::function<void()>& onError);
+
+    
 
     chainbase::database failed;
     std::mutex db_mtx;
